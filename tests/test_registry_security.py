@@ -19,6 +19,14 @@ def test_validate_endpoint_blocks_private_ip_by_default(
         validate_endpoint_url("http://127.0.0.1:8020/")
 
 
+def test_validate_endpoint_blocks_localhost_hostname_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    with pytest.raises(ValueError, match="private or link-local"):
+        validate_endpoint_url("http://localhost:8020/")
+
+
 def test_validate_endpoint_allows_private_when_flag_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

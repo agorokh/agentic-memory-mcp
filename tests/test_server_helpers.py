@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -70,6 +69,57 @@ async def test_query_tool_rejects_unsupported_mode(tmp_path: Path) -> None:
     mcp = build_mcp(router)
     fn = _tool_fn(mcp, "query_knowledge_graph")
     out = await fn(prompt="hi", search_mode="semantic", limit=10)
+    data = json.loads(out)
+    assert data["error"] == "mode_not_allowed"
+    await router.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_tool_accepts_workspace_id_with_brace_prefix(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                "[[vaults]]",
+                'id = "{team-a}"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    router = await _router_from_registry(p)
+    mcp = build_mcp(router)
+    fn = _tool_fn(mcp, "query_knowledge_graph")
+    out = await fn(prompt="hi", workspace="{team-a}", limit=10)
+    data = json.loads(out)
+    assert data["ok"] is True
+    await router.aclose()
+
+
+@pytest.mark.asyncio
+async def test_query_tool_rejects_empty_allowed_modes(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                "[[vaults]]",
+                'id = "w"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "allowed_modes = []",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    router = await _router_from_registry(p)
+    mcp = build_mcp(router)
+    fn = _tool_fn(mcp, "query_knowledge_graph")
+    out = await fn(prompt="hi", limit=10)
     data = json.loads(out)
     assert data["error"] == "mode_not_allowed"
     await router.aclose()

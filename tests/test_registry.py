@@ -251,6 +251,24 @@ def test_graph_namespace_defaults_to_id_when_unset() -> None:
     assert effective_graph_namespace(reg.vaults[0]) == "my_ws"
 
 
+def test_allowed_modes_empty_list_denies_all() -> None:
+    reg = FleetRegistry.model_validate(
+        tomllib.loads(
+            "\n".join(
+                [
+                    'schema_version = "2"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test/"',
+                    "enabled = true",
+                    "allowed_modes = []",
+                ]
+            )
+        )
+    )
+    assert allowed_modes_for(reg.vaults[0]) == frozenset()
+
+
 def test_allowed_modes_defaults_to_all_modes() -> None:
     reg = FleetRegistry.model_validate(
         tomllib.loads(

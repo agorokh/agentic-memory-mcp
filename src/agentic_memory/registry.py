@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import socket
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -29,11 +30,50 @@ Backend = Literal["lightrag", "graphiti"]
 Origin = Literal["repo-product", "repo-embedded", "human-curated"]
 
 _BLOCKED_HOSTS = frozenset({"metadata.google.internal"})
+_BLOCKED_HOSTNAMES = frozenset({"localhost"})
 
 
 def _allow_private_endpoints() -> bool:
     raw = os.environ.get("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_private_or_local_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+    )
+
+
+def _reject_private_host(host: str) -> None:
+    if host in _BLOCKED_HOSTS or host in _BLOCKED_HOSTNAMES:
+        raise ValueError(
+            f"private or link-local endpoint blocked: {host!r} "
+            "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
+        )
+    if host.endswith(".localhost") or host.endswith(".local"):
+        raise ValueError(
+            f"private or link-local endpoint blocked: {host!r} "
+            "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
+        )
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+            resolved = ipaddress.ip_address(info[4][0])
+            if _is_private_or_local_address(resolved):
+                raise ValueError(
+                    f"private or link-local endpoint blocked: {host!r} "
+                    "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
+                ) from None
+        return
+    if _is_private_or_local_address(addr):
+        raise ValueError(
+            f"private or link-local endpoint blocked: {host!r} "
+            "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
+        )
 
 
 def validate_endpoint_url(url: str) -> str:
@@ -47,20 +87,7 @@ def validate_endpoint_url(url: str) -> str:
     if host in _BLOCKED_HOSTS:
         raise ValueError(f"blocked host: {host!r}")
     if not _allow_private_endpoints():
-        try:
-            addr = ipaddress.ip_address(host)
-        except ValueError:
-            return url
-        if (
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_reserved
-        ):
-            raise ValueError(
-                f"private or link-local endpoint blocked: {host!r} "
-                "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
-            )
+        _reject_private_host(host)
     return url
 
 
@@ -122,9 +149,9 @@ def effective_graph_namespace(record: VaultRecord) -> str:
 
 def allowed_modes_for(record: VaultRecord) -> frozenset[str]:
     """Modes permitted for ``query_knowledge_graph`` on this workspace."""
-    if record.allowed_modes:
-        return frozenset(record.allowed_modes)
-    return ALL_SEARCH_MODES
+    if record.allowed_modes is None:
+        return ALL_SEARCH_MODES
+    return frozenset(record.allowed_modes)
 
 
 def load_registry(path: Path) -> FleetRegistry:

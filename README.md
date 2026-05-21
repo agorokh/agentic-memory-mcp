@@ -122,7 +122,7 @@ graph_namespace = "..."       # optional; for graphiti metadata only
 ```
 
 - **`backend = "graphiti"`** rows are listed in `list_workspaces` but **cannot be queried** until a Graphiti read path exists.
-- **`allowed_modes`** restricts `search_mode` per workspace when set.
+- **`allowed_modes`** restricts `search_mode` per workspace when set; an empty list denies all modes.
 - Endpoints must not embed credentials. Metadata hosts (e.g. cloud metadata URLs) are blocked.
 
 A separate upstream pipeline is expected to materialise this file from your fleet declaration.

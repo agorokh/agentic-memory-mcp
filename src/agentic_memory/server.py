@@ -134,11 +134,11 @@ def build_mcp(router: Router) -> FastMCP:
     preamble = tool_preamble(router)
     mcp = FastMCP("agentic-memory")
 
-    def _resolve_or_error(workspace: str | None) -> str:
+    def _resolve_workspace(workspace: str | None) -> tuple[str | None, str | None]:
         try:
-            return router.resolve_workspace(workspace)
+            return router.resolve_workspace(workspace), None
         except (ValueError, WorkspaceLookupError) as exc:
-            return str(exc)
+            return None, str(exc)
 
     async def _run_tool(
         *,
@@ -148,10 +148,10 @@ def build_mcp(router: Router) -> FastMCP:
         run: Callable[[str], Awaitable[tuple[int | None, Any]]],
     ) -> str:
         t0 = time.perf_counter()
-        ws_or_err = _resolve_or_error(workspace)
-        if ws_or_err.startswith("{"):
-            return ws_or_err
-        ws = ws_or_err
+        ws, err = _resolve_workspace(workspace)
+        if err is not None:
+            return err
+        assert ws is not None
         try:
             status, data = await run(ws)
         except httpx.HTTPError:
@@ -217,10 +217,10 @@ def build_mcp(router: Router) -> FastMCP:
                 detail=f"`prompt` must be at most {MAX_PROMPT_CHARS} characters.",
             )
         t0 = time.perf_counter()
-        ws_or_err = _resolve_or_error(workspace)
-        if ws_or_err.startswith("{"):
-            return ws_or_err
-        ws = ws_or_err
+        ws, err = _resolve_workspace(workspace)
+        if err is not None:
+            return err
+        assert ws is not None
         rec = router.vaults_by_id[ws]
         if effective_backend(rec) != "lightrag":
             return tool_error(
@@ -309,10 +309,11 @@ def build_mcp(router: Router) -> FastMCP:
         if workspace.strip() == "*":
             targets = router.visible_workspaces()
         else:
-            ws_or_err = _resolve_or_error(workspace)
-            if ws_or_err.startswith("{"):
-                return ws_or_err
-            targets = [ws_or_err]
+            ws, err = _resolve_workspace(workspace)
+            if err is not None:
+                return err
+            assert ws is not None
+            targets = [ws]
 
         async def _probe_row(ws_id: str) -> dict[str, Any]:
             rec = router.vaults_by_id[ws_id]
