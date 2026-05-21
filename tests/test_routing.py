@@ -60,7 +60,6 @@ def test_query_lightrag_maps_semantic_mode(tmp_path: Path) -> None:
             )
             assert status == 200
             assert isinstance(data, dict)
-            assert isinstance(data, dict)
             assert data.get("echo_mode") == "local"
 
     asyncio.run(body())

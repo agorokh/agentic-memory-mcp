@@ -61,13 +61,17 @@ def _reject_private_host(host: str) -> None:
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
-        for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
-            resolved = ipaddress.ip_address(info[4][0])
-            if _is_private_or_local_address(resolved):
-                raise ValueError(
-                    f"private or link-local endpoint blocked: {host!r} "
-                    "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
-                ) from None
+        try:
+            for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+                resolved = ipaddress.ip_address(info[4][0])
+                if _is_private_or_local_address(resolved):
+                    raise ValueError(
+                        f"private or link-local endpoint blocked: {host!r} "
+                        "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
+                    ) from None
+        except socket.gaierror:
+            # Unresolvable hostnames are not treated as private; runtime HTTP will fail.
+            return
         return
     if _is_private_or_local_address(addr):
         raise ValueError(
@@ -180,12 +184,6 @@ def parse_allowlist(raw: str | None) -> frozenset[str] | None:
     if not ids:
         return None
     return frozenset(ids)
-
-
-def allowlist_human(ids: frozenset[str] | None) -> str:
-    if ids is None:
-        return "(all enabled registry workspaces)"
-    return ", ".join(sorted(ids))
 
 
 def workspace_list_human(ids: frozenset[str]) -> str:

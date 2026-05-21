@@ -251,6 +251,13 @@ def test_graph_namespace_defaults_to_id_when_unset() -> None:
     assert effective_graph_namespace(reg.vaults[0]) == "my_ws"
 
 
+def test_workspace_list_human_formats_visible_ids() -> None:
+    from agentic_memory.registry import workspace_list_human
+
+    assert workspace_list_human(frozenset()) == "(none)"
+    assert workspace_list_human(frozenset({"b", "a"})) == "a, b"
+
+
 def test_allowed_modes_empty_list_denies_all() -> None:
     reg = FleetRegistry.model_validate(
         tomllib.loads(
@@ -288,7 +295,10 @@ def test_allowed_modes_defaults_to_all_modes() -> None:
     assert "semantic" in modes
 
 
-def test_apply_allowlist_filters_disabled_and_allowlist() -> None:
+def test_apply_allowlist_filters_disabled_and_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     reg = FleetRegistry.model_validate(
         tomllib.loads(
             "\n".join(
