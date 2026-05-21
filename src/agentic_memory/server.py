@@ -88,7 +88,7 @@ async def bootstrap_router() -> tuple[Router, FleetRegistry, frozenset[str] | No
             "(absolute or relative path to fleet_registry.toml)."
         )
     path = Path(raw_path).expanduser().resolve()
-    reg = load_registry(path)
+    reg = await asyncio.to_thread(load_registry, path)
     allowlist = parse_allowlist(os.environ.get("AGENTIC_MEMORY_ALLOWED_WORKSPACES"))
     warn_unknown_allowlist_ids(reg.vaults, allowlist, log=_LOG)
     router = await Router.build(vaults=reg.vaults, allowlist=allowlist)

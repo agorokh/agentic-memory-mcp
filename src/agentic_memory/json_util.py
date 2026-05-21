@@ -12,7 +12,3 @@ def tool_json(obj: Any) -> str:
     if os.environ.get("AGENTIC_MEMORY_JSON_PRETTY", "").strip().lower() in _TRUTHY:
         return json.dumps(obj, ensure_ascii=False, indent=2)
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-
-
-def tool_error(code: str, **fields: Any) -> str:
-    return tool_json({"error": code, **fields})

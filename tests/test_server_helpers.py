@@ -5,10 +5,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from agentic_memory.json_util import tool_error, tool_json
+from agentic_memory.json_util import tool_json
 from agentic_memory.registry import REGISTRY_SCHEMA_VERSION, load_registry
 from agentic_memory.routing import Router
-from agentic_memory.server import _query_tool_payload, build_mcp
+from agentic_memory.server import _query_error_payload, _query_tool_payload, build_mcp
 
 
 def test_query_tool_payload_success() -> None:
@@ -30,10 +30,12 @@ def test_tool_json_compact_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "\n" not in text
 
 
-def test_tool_error_shape() -> None:
-    text = tool_error("invalid_limit", detail="nope")
+def test_query_error_payload_shape() -> None:
+    text = _query_error_payload(workspace="w", code="invalid_limit", detail="nope")
     data = json.loads(text)
     assert data["error"] == "invalid_limit"
+    assert data["ok"] is False
+    assert data["result"] is None
 
 
 @pytest.mark.asyncio

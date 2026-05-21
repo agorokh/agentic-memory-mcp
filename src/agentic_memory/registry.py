@@ -31,6 +31,7 @@ Origin = Literal["repo-product", "repo-embedded", "human-curated"]
 
 _BLOCKED_HOSTS = frozenset({"metadata.google.internal"})
 _BLOCKED_HOSTNAMES = frozenset({"localhost"})
+_BLOCKED_METADATA_IP = "169.254.169.254"
 
 
 def _allow_private_endpoints() -> bool:
@@ -52,6 +53,20 @@ def _is_non_public_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) 
 def _normalize_hostname(host: str) -> str:
     """Lowercase and strip a trailing dot so FQDN forms match blocked-host checks."""
     return host.lower().rstrip(".")
+
+
+def _reject_metadata_endpoint(host: str) -> None:
+    """Block cloud metadata targets even when private endpoints are allowed."""
+    host = _normalize_hostname(host)
+    if host in _BLOCKED_HOSTS:
+        raise ValueError(f"blocked host: {host!r}")
+    try:
+        if ipaddress.ip_address(host) == ipaddress.ip_address(_BLOCKED_METADATA_IP):
+            raise ValueError(f"blocked metadata endpoint: {host!r}")
+    except ValueError as exc:
+        if "blocked metadata" in str(exc):
+            raise
+        return
 
 
 def _reject_private_host(host: str) -> None:
@@ -100,8 +115,7 @@ def validate_endpoint_url(url: str) -> str:
     host = _normalize_hostname(parsed.hostname or "")
     if not host:
         raise ValueError("endpoint hostname is required")
-    if host in _BLOCKED_HOSTS:
-        raise ValueError(f"blocked host: {host!r}")
+    _reject_metadata_endpoint(host)
     if not _allow_private_endpoints():
         _reject_private_host(host)
     return url
