@@ -1,28 +1,42 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from agentic_memory.audit import log_call
+from agentic_memory.json_util import tool_error, tool_json
 from agentic_memory.registry import (
     FleetRegistry,
     VaultRecord,
-    allowlist_human,
+    allowed_modes_for,
     effective_backend,
     effective_graph_namespace,
     load_registry,
     parse_allowlist,
+    warn_unknown_allowlist_ids,
+    workspace_list_human,
 )
 from agentic_memory.routing import Router, SearchMode, WorkspaceLookupError, probe_lightrag_endpoint
+from agentic_memory.types import MAX_PROMPT_CHARS, MAX_TOOL_LIMIT
 
 _LOG = logging.getLogger("agentic_memory.server")
+
+_PROBE_SEM: asyncio.Semaphore | None = None
+
+
+def _probe_semaphore() -> asyncio.Semaphore:
+    global _PROBE_SEM
+    if _PROBE_SEM is None:
+        n = int(os.environ.get("AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY", "8"))
+        _PROBE_SEM = asyncio.Semaphore(n)
+    return _PROBE_SEM
 
 
 def configure_logging() -> None:
@@ -34,13 +48,24 @@ def configure_logging() -> None:
 
 
 def tool_preamble(router: Router) -> str:
-    visible = router.visible_workspaces()
-    hint = allowlist_human(frozenset(visible)) if visible else "(none)"
+    visible = frozenset(router.visible_workspaces())
+    hint = workspace_list_human(visible)
     return (
         f"Effective workspace universe: {hint}. "
         "Never infer workspace across domains; pass workspace explicitly when more than one "
         "workspace is visible."
     )
+
+
+async def _probe_workspace(client: httpx.AsyncClient, endpoint: str, *, timeout_s: float = 5.0) -> bool:
+    async with _probe_semaphore():
+        try:
+            return await asyncio.wait_for(
+                probe_lightrag_endpoint(client, endpoint),
+                timeout=timeout_s,
+            )
+        except TimeoutError:
+            return False
 
 
 async def bootstrap_router() -> tuple[Router, FleetRegistry, frozenset[str] | None]:
@@ -50,9 +75,10 @@ async def bootstrap_router() -> tuple[Router, FleetRegistry, frozenset[str] | No
             "AGENTIC_MEMORY_REGISTRY_PATH is required "
             "(absolute or relative path to fleet_registry.toml)."
         )
-    path = Path(raw_path).expanduser()
+    path = Path(raw_path).expanduser().resolve()
     reg = load_registry(path)
     allowlist = parse_allowlist(os.environ.get("AGENTIC_MEMORY_ALLOWED_WORKSPACES"))
+    warn_unknown_allowlist_ids(reg.vaults, allowlist, log=_LOG)
     router = await Router.build(vaults=reg.vaults, allowlist=allowlist)
     if not router.vaults_by_id:
         raise SystemExit(
@@ -61,13 +87,9 @@ async def bootstrap_router() -> tuple[Router, FleetRegistry, frozenset[str] | No
         )
 
     async def _probe_visible(rec: VaultRecord) -> None:
-        try:
-            ok = await asyncio.wait_for(
-                probe_lightrag_endpoint(router.client, rec.endpoint),
-                timeout=5.0,
-            )
-        except TimeoutError:
-            ok = False
+        if effective_backend(rec) != "lightrag":
+            return
+        ok = await _probe_workspace(router.client, str(rec.endpoint))
         if not ok:
             _LOG.warning(
                 "Startup probe: workspace %r at %s is unreachable; "
@@ -80,16 +102,99 @@ async def bootstrap_router() -> tuple[Router, FleetRegistry, frozenset[str] | No
     return router, reg, allowlist
 
 
+def _query_tool_payload(workspace: str, status: int | None, data: Any) -> dict[str, Any]:
+    ok = status is not None and status < 400
+    payload: dict[str, Any] = {
+        "workspace": workspace,
+        "http_status": status,
+        "ok": ok,
+        "result": data,
+    }
+    if not ok:
+        payload["error"] = "upstream_http_error"
+    return payload
+
+
+def _health_tool_payload(
+    workspace: str,
+    status: int | None,
+    data: Any,
+    *,
+    status_key: str,
+) -> dict[str, Any]:
+    return {
+        "workspace": workspace,
+        "http_status": status,
+        "ok": status is not None and status < 400,
+        status_key: data if isinstance(data, dict) else {"raw": data},
+    }
+
+
 def build_mcp(router: Router) -> FastMCP:
     preamble = tool_preamble(router)
     mcp = FastMCP("agentic-memory")
 
+    def _resolve_or_error(workspace: str | None) -> str:
+        try:
+            return router.resolve_workspace(workspace)
+        except (ValueError, WorkspaceLookupError) as exc:
+            return str(exc)
+
+    async def _run_tool(
+        *,
+        tool: str,
+        workspace: str | None,
+        prompt: str | None,
+        run: Callable[[str], Awaitable[tuple[int | None, Any]]],
+    ) -> str:
+        t0 = time.perf_counter()
+        ws_or_err = _resolve_or_error(workspace)
+        if ws_or_err.startswith("{"):
+            return ws_or_err
+        ws = ws_or_err
+        try:
+            status, data = await run(ws)
+        except httpx.HTTPError:
+            latency = (time.perf_counter() - t0) * 1000
+            log_call(
+                workspace=ws,
+                tool=tool,
+                prompt=prompt,
+                latency_ms=latency,
+                http_status=None,
+                result_size=0,
+            )
+            return tool_error("http_error", detail="upstream unreachable")
+        except Exception as exc:
+            latency = (time.perf_counter() - t0) * 1000
+            log_call(
+                workspace=ws,
+                tool=tool,
+                prompt=prompt,
+                latency_ms=latency,
+                http_status=None,
+                result_size=0,
+            )
+            return tool_error(f"{tool}_failed", detail=str(exc))
+        latency = (time.perf_counter() - t0) * 1000
+        text = tool_json(data)
+        log_call(
+            workspace=ws,
+            tool=tool,
+            prompt=prompt,
+            latency_ms=latency,
+            http_status=status,
+            result_size=len(text),
+        )
+        return text
+
     @mcp.tool(
         name="query_knowledge_graph",
         description=(
-            f"Read-path LightRAG query over HTTP (POST /query). "
-            f"The ``limit`` argument caps the maximum serialized JSON returned to the client "
-            f"(roughly ``limit`` × 400 characters); it does not set LightRAG recall/top_k. "
+            "Read-path LightRAG query over HTTP (POST /query). "
+            "``limit`` caps serialized JSON returned to the MCP client (~limit × 400 characters); "
+            "it does not set LightRAG recall/top_k. "
+            "``semantic`` maps to LightRAG ``local``; ``keyword`` maps to ``naive``. "
             f"{preamble}"
         ),
     )
@@ -101,17 +206,36 @@ def build_mcp(router: Router) -> FastMCP:
         context_only: bool = False,
         prompt_only: bool = False,
     ) -> str:
-        t0 = time.perf_counter()
-        if limit <= 0:
-            return json.dumps(
-                {"error": "invalid_limit", "detail": "`limit` must be a positive integer."},
-                indent=2,
+        if limit <= 0 or limit > MAX_TOOL_LIMIT:
+            return tool_error(
+                "invalid_limit",
+                detail=f"`limit` must be between 1 and {MAX_TOOL_LIMIT}.",
             )
-        ws: str
-        try:
-            ws = router.resolve_workspace(workspace)
-        except (ValueError, WorkspaceLookupError) as exc:
-            return str(exc)
+        if len(prompt) > MAX_PROMPT_CHARS:
+            return tool_error(
+                "prompt_too_large",
+                detail=f"`prompt` must be at most {MAX_PROMPT_CHARS} characters.",
+            )
+        t0 = time.perf_counter()
+        ws_or_err = _resolve_or_error(workspace)
+        if ws_or_err.startswith("{"):
+            return ws_or_err
+        ws = ws_or_err
+        rec = router.vaults_by_id[ws]
+        if effective_backend(rec) != "lightrag":
+            return tool_error(
+                "unsupported_backend",
+                workspace=ws,
+                backend=effective_backend(rec),
+                detail="This bridge only implements LightRAG HTTP read paths.",
+            )
+        if search_mode not in allowed_modes_for(rec):
+            return tool_error(
+                "mode_not_allowed",
+                workspace=ws,
+                search_mode=search_mode,
+                allowed_modes=sorted(allowed_modes_for(rec)),
+            )
         try:
             status, data = await router.query_lightrag(
                 workspace_id=ws,
@@ -121,6 +245,17 @@ def build_mcp(router: Router) -> FastMCP:
                 context_only=context_only,
                 prompt_only=prompt_only,
             )
+        except httpx.HTTPError:
+            latency = (time.perf_counter() - t0) * 1000
+            log_call(
+                workspace=ws,
+                tool="query_knowledge_graph",
+                prompt=prompt,
+                latency_ms=latency,
+                http_status=None,
+                result_size=0,
+            )
+            return tool_error("http_error", detail="upstream unreachable")
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             log_call(
@@ -131,49 +266,14 @@ def build_mcp(router: Router) -> FastMCP:
                 http_status=None,
                 result_size=0,
             )
-            return json.dumps({"error": "query_failed", "detail": str(exc)}, indent=2)
+            return tool_error("query_failed", detail=str(exc))
+        payload = _query_tool_payload(ws, status, data)
         latency = (time.perf_counter() - t0) * 1000
-        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        text = tool_json(payload)
         log_call(
             workspace=ws,
             tool="query_knowledge_graph",
             prompt=prompt,
-            latency_ms=latency,
-            http_status=status,
-            result_size=len(payload),
-        )
-        return payload
-
-    @mcp.tool(
-        name="get_graph_metadata",
-        description=f"Return LightRAG /health JSON for a workspace. {preamble}",
-    )
-    async def get_graph_metadata(workspace: str | None = None) -> str:
-        t0 = time.perf_counter()
-        try:
-            ws = router.resolve_workspace(workspace)
-        except (ValueError, WorkspaceLookupError) as exc:
-            return str(exc)
-        try:
-            status, data = await router.get_health_json(ws)
-        except Exception as exc:
-            latency = (time.perf_counter() - t0) * 1000
-            log_call(
-                workspace=ws,
-                tool="get_graph_metadata",
-                prompt=None,
-                latency_ms=latency,
-                http_status=None,
-                result_size=0,
-            )
-            return json.dumps({"error": "metadata_failed", "detail": str(exc)}, indent=2)
-        latency = (time.perf_counter() - t0) * 1000
-        body = {"workspace": ws, "http_status": status, "health": data}
-        text = json.dumps(body, ensure_ascii=False, indent=2)
-        log_call(
-            workspace=ws,
-            tool="get_graph_metadata",
-            prompt=None,
             latency_ms=latency,
             http_status=status,
             result_size=len(text),
@@ -181,40 +281,58 @@ def build_mcp(router: Router) -> FastMCP:
         return text
 
     @mcp.tool(
+        name="get_graph_metadata",
+        description=f"Return LightRAG /health JSON for a workspace. {preamble}",
+    )
+    async def get_graph_metadata(workspace: str | None = None) -> str:
+        async def run(ws: str) -> tuple[int | None, Any]:
+            status, data = await router.get_health_json(ws)
+            return status, _health_tool_payload(ws, status, data, status_key="health")
+
+        return await _run_tool(
+            tool="get_graph_metadata",
+            workspace=workspace,
+            prompt=None,
+            run=run,
+        )
+
+    @mcp.tool(
         name="verify_server_health",
         description=(
-            f"Probe LightRAG HTTP health for one workspace or all visible workspaces when "
-            f'workspace is "*". {preamble}'
+            "Probe LightRAG HTTP health for one workspace or all visible workspaces when "
+            'workspace is "*". '
+            f"{preamble}"
         ),
     )
     async def verify_server_health(workspace: str = "*") -> str:
         t0 = time.perf_counter()
-        targets: list[str]
         if workspace.strip() == "*":
             targets = router.visible_workspaces()
         else:
-            try:
-                targets = [router.resolve_workspace(workspace)]
-            except (ValueError, WorkspaceLookupError) as exc:
-                return str(exc)
+            ws_or_err = _resolve_or_error(workspace)
+            if ws_or_err.startswith("{"):
+                return ws_or_err
+            targets = [ws_or_err]
 
         async def _probe_row(ws_id: str) -> dict[str, Any]:
-            try:
-                ok = await asyncio.wait_for(
-                    probe_lightrag_endpoint(router.client, router.vaults_by_id[ws_id].endpoint),
-                    timeout=5.0,
-                )
-            except TimeoutError:
-                ok = False
+            rec = router.vaults_by_id[ws_id]
+            if effective_backend(rec) != "lightrag":
+                return {
+                    "workspace": ws_id,
+                    "reachable": False,
+                    "backend": effective_backend(rec),
+                    "detail": "only LightRAG HTTP endpoints are probed",
+                }
+            ok = await _probe_workspace(router.client, str(rec.endpoint))
             return {
                 "workspace": ws_id,
                 "reachable": ok,
-                "endpoint": str(router.vaults_by_id[ws_id].endpoint),
+                "endpoint": str(rec.endpoint),
             }
 
         rows = list(await asyncio.gather(*(_probe_row(ws) for ws in targets)))
         latency = (time.perf_counter() - t0) * 1000
-        text = json.dumps({"workspaces": rows}, indent=2)
+        text = tool_json({"workspaces": rows})
         audit_workspace = "*" if len(targets) != 1 else targets[0]
         log_call(
             workspace=audit_workspace,
@@ -229,45 +347,23 @@ def build_mcp(router: Router) -> FastMCP:
     @mcp.tool(
         name="check_indexing_status",
         description=(
-            f"Return /health payload as coarse indexing/server status (LightRAG-specific fields "
+            "Return /health payload as coarse indexing/server status (LightRAG-specific fields "
             f"vary by version). {preamble}"
         ),
     )
     async def check_indexing_status(workspace: str | None = None) -> str:
-        t0 = time.perf_counter()
-        try:
-            ws = router.resolve_workspace(workspace)
-        except (ValueError, WorkspaceLookupError) as exc:
-            return str(exc)
-        try:
+        async def run(ws: str) -> tuple[int | None, Any]:
             status, data = await router.get_health_json(ws)
-        except Exception as exc:
-            latency = (time.perf_counter() - t0) * 1000
-            log_call(
-                workspace=ws,
-                tool="check_indexing_status",
-                prompt=None,
-                latency_ms=latency,
-                http_status=None,
-                result_size=0,
+            return status, _health_tool_payload(
+                ws, status, data, status_key="pipeline_status"
             )
-            return json.dumps({"error": "indexing_status_failed", "detail": str(exc)}, indent=2)
-        body = {
-            "workspace": ws,
-            "http_status": status,
-            "pipeline_status": data if isinstance(data, dict) else {"raw": data},
-        }
-        latency = (time.perf_counter() - t0) * 1000
-        text = json.dumps(body, indent=2)
-        log_call(
-            workspace=ws,
+
+        return await _run_tool(
             tool="check_indexing_status",
+            workspace=workspace,
             prompt=None,
-            latency_ms=latency,
-            http_status=status,
-            result_size=len(text),
+            run=run,
         )
-        return text
 
     list_ws_desc = (
         "List enabled workspaces visible to this bridge after allowlist filtering. " + preamble
@@ -294,10 +390,12 @@ def build_mcp(router: Router) -> FastMCP:
                     "graph_namespace": (
                         effective_graph_namespace(rec) if backend == "graphiti" else None
                     ),
+                    "allowed_modes": sorted(allowed_modes_for(rec)),
+                    "query_supported": backend == "lightrag",
                 }
             )
         latency = (time.perf_counter() - t0) * 1000
-        text = json.dumps(out, indent=2)
+        text = tool_json(out)
         log_call(
             workspace="*",
             tool="list_workspaces",

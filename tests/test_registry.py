@@ -9,6 +9,7 @@ import pytest
 from agentic_memory.registry import (
     REGISTRY_SCHEMA_VERSION,
     FleetRegistry,
+    allowed_modes_for,
     apply_allowlist,
     effective_backend,
     effective_graph_namespace,
@@ -28,7 +29,8 @@ def test_parse_allowlist_nonempty() -> None:
     assert parse_allowlist(" a , b ") == frozenset({"a", "b"})
 
 
-def test_load_registry_roundtrip(tmp_path: Path) -> None:
+def test_load_registry_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
         "\n".join(
@@ -55,7 +57,8 @@ def test_load_registry_roundtrip(tmp_path: Path) -> None:
     assert reg.vaults[0].id == "agent_factory"
 
 
-def test_registry_rejects_unknown_keys(tmp_path: Path) -> None:
+def test_registry_rejects_unknown_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "bad.toml"
     p.write_text(
         "\n".join(
@@ -75,7 +78,8 @@ def test_registry_rejects_unknown_keys(tmp_path: Path) -> None:
         load_registry(p)
 
 
-def test_registry_rejects_bad_schema_version(tmp_path: Path) -> None:
+def test_registry_rejects_bad_schema_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
         "\n".join(
@@ -94,7 +98,8 @@ def test_registry_rejects_bad_schema_version(tmp_path: Path) -> None:
         load_registry(p)
 
 
-def test_router_rejects_duplicate_workspace_ids(tmp_path: Path) -> None:
+def test_router_rejects_duplicate_workspace_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
         "\n".join(
@@ -124,10 +129,10 @@ def test_router_rejects_duplicate_workspace_ids(tmp_path: Path) -> None:
     asyncio.run(body())
 
 
-def test_v1_manifest_still_loads_and_defaults_backend_to_lightrag(tmp_path: Path) -> None:
-    """A v1 manifest (no `backend` field) must continue to load and resolve
-    to the implicit ``lightrag`` backend — this is the backward-compat
-    promise from MEMORY_SUBSTRATE.md."""
+def test_v1_manifest_still_loads_and_defaults_backend_to_lightrag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
         "\n".join(
@@ -151,7 +156,10 @@ def test_v1_manifest_still_loads_and_defaults_backend_to_lightrag(tmp_path: Path
     assert effective_graph_namespace(rec) == "legacy_ws"
 
 
-def test_v2_manifest_loads_with_backend_and_origin(tmp_path: Path) -> None:
+def test_v2_manifest_loads_with_backend_and_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
         "\n".join(
@@ -194,7 +202,7 @@ def test_v2_manifest_rejects_unknown_backend(tmp_path: Path) -> None:
                 "[[vaults]]",
                 'id = "x"',
                 'endpoint = "http://127.0.0.1:1/"',
-                'backend = "mem0"',  # not in Backend Literal
+                'backend = "mem0"',
                 "enabled = true",
                 "",
             ]
@@ -214,7 +222,7 @@ def test_v2_manifest_rejects_unknown_origin(tmp_path: Path) -> None:
                 "[[vaults]]",
                 'id = "x"',
                 'endpoint = "http://127.0.0.1:1/"',
-                'origin = "operator-built"',  # not in Origin Literal
+                'origin = "operator-built"',
                 "enabled = true",
                 "",
             ]
@@ -226,7 +234,6 @@ def test_v2_manifest_rejects_unknown_origin(tmp_path: Path) -> None:
 
 
 def test_graph_namespace_defaults_to_id_when_unset() -> None:
-    """Graphiti workspaces that omit `graph_namespace` fall back to `id`."""
     reg = FleetRegistry.model_validate(
         tomllib.loads(
             "\n".join(
@@ -242,6 +249,25 @@ def test_graph_namespace_defaults_to_id_when_unset() -> None:
         )
     )
     assert effective_graph_namespace(reg.vaults[0]) == "my_ws"
+
+
+def test_allowed_modes_defaults_to_all_modes() -> None:
+    reg = FleetRegistry.model_validate(
+        tomllib.loads(
+            "\n".join(
+                [
+                    'schema_version = "2"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test/"',
+                    "enabled = true",
+                ]
+            )
+        )
+    )
+    modes = allowed_modes_for(reg.vaults[0])
+    assert "mix" in modes
+    assert "semantic" in modes
 
 
 def test_apply_allowlist_filters_disabled_and_allowlist() -> None:

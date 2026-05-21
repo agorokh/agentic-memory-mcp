@@ -60,6 +60,7 @@ def test_query_lightrag_maps_semantic_mode(tmp_path: Path) -> None:
             )
             assert status == 200
             assert isinstance(data, dict)
+            assert isinstance(data, dict)
             assert data.get("echo_mode") == "local"
 
     asyncio.run(body())
@@ -236,10 +237,82 @@ def test_query_truncation_keeps_final_json_under_cap(tmp_path: Path) -> None:
             )
             assert isinstance(data, dict)
             assert data.get("truncated") is True
-            out = json.dumps(data, ensure_ascii=False, indent=2)
+            out = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             assert len(out) <= 2 * 400
 
     asyncio.run(body())
+
+
+@pytest.mark.asyncio
+async def test_query_lightrag_returns_upstream_error_status(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                "[[vaults]]",
+                'id = "w"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    reg = load_registry(p)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/query":
+            return httpx.Response(502, json={"error": "upstream"})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        router = await Router.build(vaults=reg.vaults, allowlist=None, client=client)
+        status, data = await router.query_lightrag(
+            workspace_id="w",
+            prompt="q",
+            search_mode="mix",
+            limit=60,
+            context_only=False,
+            prompt_only=False,
+        )
+        assert status == 502
+        assert isinstance(data, dict)
+
+
+@pytest.mark.asyncio
+async def test_query_lightrag_rejects_graphiti_backend(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                'schema_version = "2"',
+                "[[vaults]]",
+                'id = "g"',
+                'endpoint = "http://memory.test"',
+                'backend = "graphiti"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    reg = load_registry(p)
+    transport = _mock_transport()
+    async with httpx.AsyncClient(transport=transport) as client:
+        router = await Router.build(vaults=reg.vaults, allowlist=None, client=client)
+        status, data = await router.query_lightrag(
+            workspace_id="g",
+            prompt="q",
+            search_mode="mix",
+            limit=60,
+            context_only=False,
+            prompt_only=False,
+        )
+        assert status is None
+        assert isinstance(data, dict)
+        assert data.get("error") == "unsupported_backend"
 
 
 def test_probe_requires_success_status() -> None:

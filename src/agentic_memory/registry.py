@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import ipaddress
+import os
 import tomllib
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+
+from agentic_memory.types import ALL_SEARCH_MODES, SearchMode
 
 # ---------------------------------------------------------------------------
 # Schema version policy
@@ -14,9 +19,6 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 # / ``graph_namespace`` fields; all are optional so v1 manifests load cleanly
 # and the implicit backend is "lightrag" (the only substrate this bridge has
 # ever served).
-#
-# Coordinate any further bump with the upstream registry materializer
-# (``tools/hermes_adapter/agentic_memory_registry_materialize.py``).
 # ---------------------------------------------------------------------------
 
 SUPPORTED_SCHEMA_VERSIONS: frozenset[str] = frozenset({"1", "2"})
@@ -26,21 +28,44 @@ assert REGISTRY_SCHEMA_VERSION in SUPPORTED_SCHEMA_VERSIONS
 Backend = Literal["lightrag", "graphiti"]
 Origin = Literal["repo-product", "repo-embedded", "human-curated"]
 
+_BLOCKED_HOSTS = frozenset({"metadata.google.internal"})
+
+
+def _allow_private_endpoints() -> bool:
+    raw = os.environ.get("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def validate_endpoint_url(url: str) -> str:
+    """Reject unsafe endpoint URLs unless private endpoints are explicitly allowed."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("endpoint must use http or https")
+    if parsed.username or parsed.password:
+        raise ValueError("endpoint must not embed credentials in the URL")
+    host = (parsed.hostname or "").lower()
+    if host in _BLOCKED_HOSTS:
+        raise ValueError(f"blocked host: {host!r}")
+    if not _allow_private_endpoints():
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            return url
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+        ):
+            raise ValueError(
+                f"private or link-local endpoint blocked: {host!r} "
+                "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
+            )
+    return url
+
 
 class VaultRecord(BaseModel):
-    """One workspace row in ``fleet_registry.toml`` (``[[vaults]]``).
-
-    Schema v2 additions (all optional, defaults preserve v1 semantics):
-
-    - ``backend``: which Tier-3 substrate serves this workspace. ``None``
-      means v1 implicit default = ``"lightrag"``. Use :func:`effective_backend`
-      to resolve to a concrete value.
-    - ``origin``: vault origin classification per
-      ``docs/00_Core/VAULT_TAXONOMY.md`` in template-repo.
-    - ``graph_namespace``: for ``backend="graphiti"``, the per-call ``group_id``
-      that partitions the shared Neo4j graph. Defaults to ``id``. Ignored for
-      ``backend="lightrag"`` (LightRAG isolates by per-workspace HTTP server).
-    """
+    """One workspace row in ``fleet_registry.toml`` (``[[vaults]]``)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -51,6 +76,22 @@ class VaultRecord(BaseModel):
     backend: Backend | None = None
     origin: Origin | None = None
     graph_namespace: str | None = None
+    allowed_modes: list[SearchMode] | None = None
+
+    @field_validator("endpoint", mode="before")
+    @classmethod
+    def _validate_endpoint(cls, value: object) -> object:
+        return validate_endpoint_url(str(value))
+
+    @field_validator("allowed_modes")
+    @classmethod
+    def _validate_allowed_modes(cls, modes: list[SearchMode] | None) -> list[SearchMode] | None:
+        if modes is None:
+            return None
+        unknown = [m for m in modes if m not in ALL_SEARCH_MODES]
+        if unknown:
+            raise ValueError(f"unknown allowed_modes: {unknown}")
+        return modes
 
 
 class FleetRegistry(BaseModel):
@@ -61,6 +102,13 @@ class FleetRegistry(BaseModel):
     schema_version: str = Field(default=REGISTRY_SCHEMA_VERSION, min_length=1)
     vaults: list[VaultRecord] = Field(default_factory=list)
 
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _coerce_schema_version(cls, value: object) -> str:
+        if isinstance(value, int):
+            return str(value)
+        return str(value)
+
 
 def effective_backend(record: VaultRecord) -> Backend:
     """Return the effective backend, defaulting to ``"lightrag"`` for v1 rows."""
@@ -68,14 +116,15 @@ def effective_backend(record: VaultRecord) -> Backend:
 
 
 def effective_graph_namespace(record: VaultRecord) -> str:
-    """Return the effective Graphiti ``group_id`` for the workspace.
-
-    Defaults to the workspace ``id`` when ``graph_namespace`` is unset.
-    Callers should still gate on ``effective_backend(record) == "graphiti"``
-    before using this value — for ``lightrag`` workspaces the namespace
-    concept does not apply.
-    """
+    """Return the effective Graphiti ``group_id`` for the workspace."""
     return record.graph_namespace or record.id
+
+
+def allowed_modes_for(record: VaultRecord) -> frozenset[str]:
+    """Modes permitted for ``query_knowledge_graph`` on this workspace."""
+    if record.allowed_modes:
+        return frozenset(record.allowed_modes)
+    return ALL_SEARCH_MODES
 
 
 def load_registry(path: Path) -> FleetRegistry:
@@ -112,6 +161,11 @@ def allowlist_human(ids: frozenset[str] | None) -> str:
     return ", ".join(sorted(ids))
 
 
+def workspace_list_human(ids: frozenset[str]) -> str:
+    items = sorted(ids)
+    return ", ".join(items) if items else "(none)"
+
+
 def apply_allowlist(
     vaults: list[VaultRecord],
     allowlist: frozenset[str] | None,
@@ -121,3 +175,20 @@ def apply_allowlist(
     if allowlist is None:
         return enabled
     return [v for v in enabled if v.id in allowlist]
+
+
+def warn_unknown_allowlist_ids(
+    vaults: list[VaultRecord],
+    allowlist: frozenset[str] | None,
+    *,
+    log: object,
+) -> None:
+    if allowlist is None:
+        return
+    known = {v.id for v in vaults if v.enabled}
+    unknown = allowlist - known
+    if unknown:
+        log.warning(  # type: ignore[union-attr]
+            "Allowlist ids not in enabled registry: %s",
+            sorted(unknown),
+        )
