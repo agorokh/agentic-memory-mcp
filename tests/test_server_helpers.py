@@ -38,6 +38,24 @@ def test_query_error_payload_shape() -> None:
     assert data["result"] is None
 
 
+def test_query_error_payload_cannot_override_envelope_keys() -> None:
+    text = _query_error_payload(
+        workspace="w",
+        code="workspace_unknown",
+        requested="x",
+        ok=True,
+        http_status=200,
+        result={"hijacked": True},
+        error="other",
+    )
+    data = json.loads(text)
+    assert data["ok"] is False
+    assert data["http_status"] is None
+    assert data["result"] is None
+    assert data["error"] == "workspace_unknown"
+    assert data["requested"] == "x"
+
+
 @pytest.mark.asyncio
 async def test_query_tool_rejects_invalid_limit(tmp_path: Path) -> None:
     p = _write_registry(tmp_path)

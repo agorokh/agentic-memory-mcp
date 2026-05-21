@@ -30,6 +30,10 @@ from agentic_memory.types import MAX_PROMPT_CHARS, MAX_TOOL_LIMIT
 _LOG = logging.getLogger("agentic_memory.server")
 
 _PROBE_SEM: asyncio.Semaphore | None = None
+_PROBE_SEM_LIMIT: int | None = None
+
+_CLIENT_ERROR_RESERVED = frozenset({"workspace", "http_status", "ok", "error", "detail"})
+_QUERY_ERROR_RESERVED = _CLIENT_ERROR_RESERVED | frozenset({"result"})
 
 
 def _probe_concurrency_limit() -> int:
@@ -46,10 +50,23 @@ def _probe_concurrency_limit() -> int:
 
 
 def _probe_semaphore() -> asyncio.Semaphore:
-    global _PROBE_SEM
-    if _PROBE_SEM is None:
-        _PROBE_SEM = asyncio.Semaphore(_probe_concurrency_limit())
+    global _PROBE_SEM, _PROBE_SEM_LIMIT
+    limit = _probe_concurrency_limit()
+    if _PROBE_SEM is None or _PROBE_SEM_LIMIT != limit:
+        _PROBE_SEM = asyncio.Semaphore(limit)
+        _PROBE_SEM_LIMIT = limit
     return _PROBE_SEM
+
+
+def _merge_error_fields(
+    payload: dict[str, Any],
+    fields: dict[str, Any],
+    *,
+    reserved: frozenset[str],
+) -> None:
+    for key, value in fields.items():
+        if key not in reserved:
+            payload[key] = value
 
 
 def configure_logging() -> None:
@@ -148,7 +165,7 @@ def _client_error_payload(
     }
     if detail is not None:
         payload["detail"] = detail
-    payload.update(fields)
+    _merge_error_fields(payload, fields, reserved=_CLIENT_ERROR_RESERVED)
     return tool_json(payload)
 
 
@@ -168,7 +185,7 @@ def _query_error_payload(
     }
     if detail is not None:
         payload["detail"] = detail
-    payload.update(fields)
+    _merge_error_fields(payload, fields, reserved=_QUERY_ERROR_RESERVED)
     return tool_json(payload)
 
 

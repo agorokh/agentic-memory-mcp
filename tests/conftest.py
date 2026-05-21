@@ -16,6 +16,18 @@ def _allow_private_endpoints_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_probe_semaphore() -> None:
+    """Avoid caching probe concurrency across tests with different env overrides."""
+    import agentic_memory.server as server_mod
+
+    server_mod._PROBE_SEM = None
+    server_mod._PROBE_SEM_LIMIT = None
+    yield
+    server_mod._PROBE_SEM = None
+    server_mod._PROBE_SEM_LIMIT = None
+
+
+@pytest.fixture(autouse=True)
 def _resolve_test_hostnames(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve *.test registry hosts to loopback so DNS fail-closed checks can run in CI."""
     real_getaddrinfo = socket.getaddrinfo
