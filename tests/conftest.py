@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import pytest
 
-# Make `src/agentic_memory/` importable when running tests from the repo root.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-_SRC = REPO_ROOT / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+
+@pytest.fixture(autouse=True)
+def _allow_private_endpoints_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests use localhost/memory.test endpoints; production defaults stay strict."""
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")

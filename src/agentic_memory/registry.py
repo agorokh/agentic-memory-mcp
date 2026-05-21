@@ -38,7 +38,9 @@ def _allow_private_endpoints() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _is_private_or_local_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def _is_non_public_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if hasattr(addr, "is_global"):
+        return not addr.is_global
     return bool(
         addr.is_private
         or addr.is_loopback
@@ -64,16 +66,18 @@ def _reject_private_host(host: str) -> None:
         try:
             for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
                 resolved = ipaddress.ip_address(info[4][0])
-                if _is_private_or_local_address(resolved):
+                if _is_non_public_address(resolved):
                     raise ValueError(
                         f"private or link-local endpoint blocked: {host!r} "
                         "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"
                     ) from None
-        except socket.gaierror:
-            # Unresolvable hostnames are not treated as private; runtime HTTP will fail.
-            return
+        except socket.gaierror as exc:
+            raise ValueError(
+                f"could not resolve endpoint hostname {host!r}; "
+                "refuse registry endpoints with unknown DNS in strict mode"
+            ) from exc
         return
-    if _is_private_or_local_address(addr):
+    if _is_non_public_address(addr):
         raise ValueError(
             f"private or link-local endpoint blocked: {host!r} "
             "(set AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1 for local dev)"

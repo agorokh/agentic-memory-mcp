@@ -132,6 +132,25 @@ def _log_query_call(
     )
 
 
+def _client_error_payload(
+    *,
+    code: str,
+    workspace: str | None = None,
+    detail: str | None = None,
+    **fields: Any,
+) -> str:
+    payload: dict[str, Any] = {
+        "workspace": workspace,
+        "http_status": None,
+        "ok": False,
+        "error": code,
+    }
+    if detail is not None:
+        payload["detail"] = detail
+    payload.update(fields)
+    return tool_json(payload)
+
+
 def _query_tool_payload(workspace: str, status: int | None, data: Any) -> dict[str, Any]:
     ok = status is not None and status < 400
     payload: dict[str, Any] = {
@@ -180,7 +199,7 @@ def build_mcp(router: Router) -> FastMCP:
         t0 = time.perf_counter()
         ws, err = _resolve_workspace(workspace)
         if err is not None:
-            return err
+            return _client_error_payload(code="workspace_resolution_failed", detail=err)
         assert ws is not None
         try:
             status, data = await run(ws)
@@ -265,7 +284,9 @@ def build_mcp(router: Router) -> FastMCP:
             )
         ws, err = _resolve_workspace(workspace)
         if err is not None:
-            return _reject(err)
+            return _reject(
+                _client_error_payload(code="workspace_resolution_failed", detail=err),
+            )
         assert ws is not None
         rec = router.vaults_by_id[ws]
         if effective_backend(rec) != "lightrag":
@@ -346,7 +367,7 @@ def build_mcp(router: Router) -> FastMCP:
         else:
             ws, err = _resolve_workspace(workspace)
             if err is not None:
-                return err
+                return _client_error_payload(code="workspace_resolution_failed", detail=err)
             assert ws is not None
             targets = [ws]
 

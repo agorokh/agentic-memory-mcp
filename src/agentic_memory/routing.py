@@ -160,8 +160,8 @@ class Router(BaseModel):
         context_only: bool,
         prompt_only: bool,
     ) -> tuple[int | None, Any]:
-        if effective_backend(self.vaults_by_id[workspace_id]) != "lightrag":
-            backend = effective_backend(self.vaults_by_id[workspace_id])
+        backend = effective_backend(self.vaults_by_id[workspace_id])
+        if backend != "lightrag":
             return None, {
                 "error": "unsupported_backend",
                 "workspace": workspace_id,
@@ -207,8 +207,8 @@ class Router(BaseModel):
         return {"truncated": True, "limit": limit, "preview": text[:best]}
 
     async def get_health_json(self, workspace_id: str) -> tuple[int | None, Any]:
-        if effective_backend(self.vaults_by_id[workspace_id]) != "lightrag":
-            backend = effective_backend(self.vaults_by_id[workspace_id])
+        backend = effective_backend(self.vaults_by_id[workspace_id])
+        if backend != "lightrag":
             return None, {
                 "error": "unsupported_backend",
                 "workspace": workspace_id,
