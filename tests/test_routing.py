@@ -306,6 +306,69 @@ async def test_query_lightrag_rejects_graphiti_backend(tmp_path: Path) -> None:
         assert data.get("error") == "unsupported_backend"
 
 
+def test_router_build_rejects_invalid_http_max_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS", "not-a-number")
+
+    async def body() -> None:
+        p = tmp_path / "fleet_registry.toml"
+        p.write_text(
+            "\n".join(
+                [
+                    f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test"',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        reg = load_registry(p)
+        with pytest.raises(ValueError, match="AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS"):
+            await Router.build(vaults=reg.vaults, allowlist=None)
+
+    asyncio.run(body())
+
+
+def test_base_url_revalidates_endpoint_on_each_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def _track(url: str) -> str:
+        calls.append(url)
+        return url
+
+    monkeypatch.setattr("agentic_memory.routing.validate_endpoint_url", _track)
+
+    async def body() -> None:
+        p = tmp_path / "fleet_registry.toml"
+        p.write_text(
+            "\n".join(
+                [
+                    f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test"',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        reg = load_registry(p)
+        router = await Router.build(vaults=reg.vaults, allowlist=None)
+        router._base_url("w")
+        router._base_url("w")
+        await router.aclose()
+        assert len(calls) == 2
+
+    asyncio.run(body())
+
+
 def test_probe_requires_success_status() -> None:
     async def body() -> None:
         transport = httpx.MockTransport(

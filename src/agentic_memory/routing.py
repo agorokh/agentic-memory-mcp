@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, PrivateAttr
 
-from agentic_memory.registry import VaultRecord, apply_allowlist, effective_backend
+from agentic_memory.registry import VaultRecord, apply_allowlist, effective_backend, validate_endpoint_url
 from agentic_memory.types import SearchMode
 
 _LOG = logging.getLogger("agentic_memory.routing")
@@ -18,9 +18,27 @@ class WorkspaceLookupError(LookupError):
     """Raised when ``workspace`` is unknown or disabled in the registry."""
 
 
+def _env_int(name: str, default: str) -> int:
+    raw = os.environ.get(name, default).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _env_float(name: str, default: str) -> float:
+    raw = os.environ.get(name, default).strip()
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
 def _http_limits() -> httpx.Limits:
-    max_conn = int(os.environ.get("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS", "64"))
-    max_keep = int(os.environ.get("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE", "16"))
+    max_conn = _env_int("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS", "64")
+    max_keep = _env_int("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE", "16")
+    if max_conn < 1 or max_keep < 0:
+        raise ValueError("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS must be >= 1")
     return httpx.Limits(
         max_connections=max_conn,
         max_keepalive_connections=max_keep,
@@ -28,12 +46,15 @@ def _http_limits() -> httpx.Limits:
 
 
 def _http_timeout(timeout_s: float) -> httpx.Timeout:
-    read_s = float(os.environ.get("AGENTIC_MEMORY_QUERY_READ_TIMEOUT_S", str(timeout_s)))
+    read_s = _env_float("AGENTIC_MEMORY_QUERY_READ_TIMEOUT_S", str(timeout_s))
+    if read_s <= 0:
+        raise ValueError("AGENTIC_MEMORY_QUERY_READ_TIMEOUT_S must be > 0")
     return httpx.Timeout(connect=5.0, read=read_s, write=10.0, pool=5.0)
 
 
 async def probe_lightrag_endpoint(client: httpx.AsyncClient, endpoint: HttpUrl | str) -> bool:
     """Return True when ``/health`` or ``/`` returns a 2xx/3xx (not 4xx/5xx)."""
+    validate_endpoint_url(str(endpoint))
     base = str(endpoint).rstrip("/")
     for path in ("/health", "/"):
         try:
@@ -119,7 +140,8 @@ class Router(BaseModel):
 
     def _base_url(self, workspace_id: str) -> str:
         rec = self.vaults_by_id[workspace_id]
-        return str(rec.endpoint).rstrip("/")
+        url = validate_endpoint_url(str(rec.endpoint))
+        return url.rstrip("/")
 
     def _map_mode(self, search_mode: SearchMode) -> str:
         if search_mode in ("mix", "global", "hybrid", "local", "naive"):
