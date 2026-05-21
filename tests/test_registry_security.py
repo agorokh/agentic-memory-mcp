@@ -11,6 +11,11 @@ def test_validate_endpoint_blocks_metadata_host() -> None:
         validate_endpoint_url("http://metadata.google.internal/")
 
 
+def test_validate_endpoint_blocks_metadata_host_fqdn_trailing_dot() -> None:
+    with pytest.raises(ValueError, match="blocked host"):
+        validate_endpoint_url("http://metadata.google.internal./")
+
+
 def test_validate_endpoint_blocks_private_ip_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

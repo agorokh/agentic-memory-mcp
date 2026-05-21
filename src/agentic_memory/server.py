@@ -11,7 +11,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from agentic_memory.audit import log_call
-from agentic_memory.json_util import tool_error, tool_json
+from agentic_memory.json_util import tool_json
 from agentic_memory.registry import (
     FleetRegistry,
     VaultRecord,
@@ -151,6 +151,26 @@ def _client_error_payload(
     return tool_json(payload)
 
 
+def _query_error_payload(
+    *,
+    workspace: str | None,
+    code: str,
+    detail: str | None = None,
+    **fields: Any,
+) -> str:
+    payload: dict[str, Any] = {
+        "workspace": workspace,
+        "http_status": None,
+        "ok": False,
+        "result": None,
+        "error": code,
+    }
+    if detail is not None:
+        payload["detail"] = detail
+    payload.update(fields)
+    return tool_json(payload)
+
+
 def _query_tool_payload(workspace: str, status: int | None, data: Any) -> dict[str, Any]:
     ok = status is not None and status < 400
     payload: dict[str, Any] = {
@@ -213,7 +233,11 @@ def build_mcp(router: Router) -> FastMCP:
                 http_status=None,
                 result_size=0,
             )
-            return tool_error("http_error", detail="upstream unreachable")
+            return _client_error_payload(
+                workspace=ws,
+                code="http_error",
+                detail="upstream unreachable",
+            )
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             log_call(
@@ -224,7 +248,11 @@ def build_mcp(router: Router) -> FastMCP:
                 http_status=None,
                 result_size=0,
             )
-            return tool_error(f"{tool}_failed", detail=str(exc))
+            return _client_error_payload(
+                workspace=ws,
+                code=f"{tool}_failed",
+                detail=str(exc),
+            )
         latency = (time.perf_counter() - t0) * 1000
         text = tool_json(data)
         log_call(
@@ -270,30 +298,36 @@ def build_mcp(router: Router) -> FastMCP:
 
         if limit <= 0 or limit > MAX_TOOL_LIMIT:
             return _reject(
-                tool_error(
-                    "invalid_limit",
+                _query_error_payload(
+                    workspace=audit_ws,
+                    code="invalid_limit",
                     detail=f"`limit` must be between 1 and {MAX_TOOL_LIMIT}.",
                 )
             )
         if len(prompt) > MAX_PROMPT_CHARS:
             return _reject(
-                tool_error(
-                    "prompt_too_large",
+                _query_error_payload(
+                    workspace=audit_ws,
+                    code="prompt_too_large",
                     detail=f"`prompt` must be at most {MAX_PROMPT_CHARS} characters.",
                 )
             )
         ws, err = _resolve_workspace(workspace)
         if err is not None:
             return _reject(
-                _client_error_payload(code="workspace_resolution_failed", detail=err),
+                _query_error_payload(
+                    workspace=audit_ws,
+                    code="workspace_resolution_failed",
+                    detail=err,
+                ),
             )
         assert ws is not None
         rec = router.vaults_by_id[ws]
         if effective_backend(rec) != "lightrag":
             return _reject(
-                tool_error(
-                    "unsupported_backend",
+                _query_error_payload(
                     workspace=ws,
+                    code="unsupported_backend",
                     backend=effective_backend(rec),
                     detail="This bridge only implements LightRAG HTTP read paths.",
                 ),
@@ -301,9 +335,9 @@ def build_mcp(router: Router) -> FastMCP:
             )
         if search_mode not in allowed_modes_for(rec):
             return _reject(
-                tool_error(
-                    "mode_not_allowed",
+                _query_error_payload(
                     workspace=ws,
+                    code="mode_not_allowed",
                     search_mode=search_mode,
                     allowed_modes=sorted(allowed_modes_for(rec)),
                 ),
@@ -320,11 +354,18 @@ def build_mcp(router: Router) -> FastMCP:
             )
         except httpx.HTTPError:
             return _reject(
-                tool_error("http_error", detail="upstream unreachable"),
+                _query_error_payload(
+                    workspace=ws,
+                    code="http_error",
+                    detail="upstream unreachable",
+                ),
                 ws=ws,
             )
         except Exception as exc:
-            return _reject(tool_error("query_failed", detail=str(exc)), ws=ws)
+            return _reject(
+                _query_error_payload(workspace=ws, code="query_failed", detail=str(exc)),
+                ws=ws,
+            )
         payload = _query_tool_payload(ws, status, data)
         text = tool_json(payload)
         _log_query_call(

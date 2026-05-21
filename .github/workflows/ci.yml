@@ -33,7 +33,7 @@ jobs:
       - name: Run tests with coverage
         env:
           AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS: "1"
-        run: pytest --cov=agentic_memory --cov-fail-under=70 -v
+        run: pytest --cov=agentic_memory --cov-fail-under=73 -v
 
       - name: Dependency audit (pip-audit)
         run: |

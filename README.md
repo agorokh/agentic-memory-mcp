@@ -149,7 +149,7 @@ Most agentic-memory bridges either lock you to one backend per process, or expos
 
 ```bash
 pip install -e ".[dev]"
-pytest --cov=agentic_memory --cov-fail-under=70 -v
+pytest --cov=agentic_memory --cov-fail-under=73 -v
 ruff check src tests
 ```
 

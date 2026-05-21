@@ -49,7 +49,13 @@ def _is_non_public_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) 
     )
 
 
+def _normalize_hostname(host: str) -> str:
+    """Lowercase and strip a trailing dot so FQDN forms match blocked-host checks."""
+    return host.lower().rstrip(".")
+
+
 def _reject_private_host(host: str) -> None:
+    host = _normalize_hostname(host)
     if host in _BLOCKED_HOSTS or host in _BLOCKED_HOSTNAMES:
         raise ValueError(
             f"private or link-local endpoint blocked: {host!r} "
@@ -91,7 +97,7 @@ def validate_endpoint_url(url: str) -> str:
         raise ValueError("endpoint must use http or https")
     if parsed.username or parsed.password:
         raise ValueError("endpoint must not embed credentials in the URL")
-    host = (parsed.hostname or "").lower()
+    host = _normalize_hostname(parsed.hostname or "")
     if not host:
         raise ValueError("endpoint hostname is required")
     if host in _BLOCKED_HOSTS:
@@ -142,8 +148,6 @@ class FleetRegistry(BaseModel):
     @field_validator("schema_version", mode="before")
     @classmethod
     def _coerce_schema_version(cls, value: object) -> str:
-        if isinstance(value, int):
-            return str(value)
         return str(value)
 
 

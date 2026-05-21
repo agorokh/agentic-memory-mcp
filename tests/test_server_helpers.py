@@ -44,6 +44,9 @@ async def test_query_tool_rejects_invalid_limit(tmp_path: Path) -> None:
     fn = _tool_fn(mcp, "query_knowledge_graph")
     out = await fn(prompt="hi", limit=0)
     data = json.loads(out)
+    assert data["ok"] is False
+    assert data["http_status"] is None
+    assert data["result"] is None
     assert data["error"] == "invalid_limit"
     await router.aclose()
 
@@ -59,7 +62,7 @@ async def test_query_tool_rejects_unsupported_mode(tmp_path: Path) -> None:
                 'id = "w"',
                 'endpoint = "http://memory.test"',
                 "enabled = true",
-                'allowed_modes = ["mix"]',
+                'allowed_modes = ["keyword"]',
                 "",
             ]
         ),
@@ -70,6 +73,9 @@ async def test_query_tool_rejects_unsupported_mode(tmp_path: Path) -> None:
     fn = _tool_fn(mcp, "query_knowledge_graph")
     out = await fn(prompt="hi", search_mode="semantic", limit=10)
     data = json.loads(out)
+    assert data["ok"] is False
+    assert data["http_status"] is None
+    assert data["result"] is None
     assert data["error"] == "mode_not_allowed"
     await router.aclose()
 
