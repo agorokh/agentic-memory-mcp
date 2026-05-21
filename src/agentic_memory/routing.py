@@ -180,31 +180,7 @@ class Router(BaseModel):
             data = resp.json()
         except json.JSONDecodeError:
             data = {"raw": resp.text}
-        if limit > 0:
-            data = self._maybe_truncate_payload(data, limit)
         return resp.status_code, data
-
-    def _maybe_truncate_payload(self, data: Any, limit: int) -> Any:
-        """Coarse cap on serialized size using ``limit`` as a rough token proxy."""
-        cap = limit * 400
-        try:
-            text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError):
-            return data
-        if len(text) <= cap:
-            return data
-        lo, hi = 0, min(len(text), cap)
-        best = 0
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            candidate = {"truncated": True, "limit": limit, "preview": text[:mid]}
-            serialized = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
-            if len(serialized) <= cap:
-                best = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return {"truncated": True, "limit": limit, "preview": text[:best]}
 
     async def get_health_json(self, workspace_id: str) -> tuple[int | None, Any]:
         backend = effective_backend(self.vaults_by_id[workspace_id])

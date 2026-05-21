@@ -11,7 +11,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from agentic_memory.audit import log_call
-from agentic_memory.json_util import tool_json
+from agentic_memory.json_util import cap_serialized_tool_payload, tool_json
 from agentic_memory.registry import (
     FleetRegistry,
     VaultRecord,
@@ -367,6 +367,8 @@ def build_mcp(router: Router) -> FastMCP:
                 ws=ws,
             )
         payload = _query_tool_payload(ws, status, data)
+        if limit > 0:
+            payload = cap_serialized_tool_payload(payload, limit)
         text = tool_json(payload)
         _log_query_call(
             workspace=ws,

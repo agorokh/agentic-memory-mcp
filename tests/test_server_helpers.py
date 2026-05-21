@@ -162,6 +162,31 @@ async def test_query_tool_rejects_empty_allowed_modes(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_tool_caps_full_envelope(tmp_path: Path) -> None:
+    p = _write_registry(tmp_path)
+    huge = {"blob": "Z" * 8000}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/query":
+            return httpx.Response(200, json=huge)
+        return httpx.Response(404)
+
+    reg = load_registry(p)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    router = await Router.build(vaults=reg.vaults, allowlist=None, client=client)
+    mcp = build_mcp(router)
+    fn = _tool_fn(mcp, "query_knowledge_graph")
+    out = await fn(prompt="hi", limit=2)
+    assert len(out) <= 2 * 400
+    data = json.loads(out)
+    assert data["ok"] is True
+    result = data["result"]
+    assert isinstance(result, dict)
+    assert result.get("truncated") is True
+    await router.aclose()
+
+
+@pytest.mark.asyncio
 async def test_query_tool_wraps_success_with_http_status(tmp_path: Path) -> None:
     p = _write_registry(tmp_path)
     router = await _router_from_registry(p)

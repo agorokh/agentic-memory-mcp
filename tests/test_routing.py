@@ -199,7 +199,7 @@ def test_resolve_workspace_rejects_unknown_with_structured_payload(tmp_path: Pat
     asyncio.run(body())
 
 
-def test_query_truncation_keeps_final_json_under_cap(tmp_path: Path) -> None:
+def test_query_lightrag_returns_untruncated_upstream_body(tmp_path: Path) -> None:
     async def body() -> None:
         p = tmp_path / "fleet_registry.toml"
         p.write_text(
@@ -234,10 +234,7 @@ def test_query_truncation_keeps_final_json_under_cap(tmp_path: Path) -> None:
                 context_only=False,
                 prompt_only=False,
             )
-            assert isinstance(data, dict)
-            assert data.get("truncated") is True
-            out = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-            assert len(out) <= 2 * 400
+            assert data == huge
 
     asyncio.run(body())
 
