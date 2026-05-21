@@ -22,9 +22,11 @@ def _reset_probe_semaphore() -> None:
 
     server_mod._PROBE_SEM = None
     server_mod._PROBE_SEM_LIMIT = None
+    server_mod._PROBE_SEM_LOOP_ID = None
     yield
     server_mod._PROBE_SEM = None
     server_mod._PROBE_SEM_LIMIT = None
+    server_mod._PROBE_SEM_LOOP_ID = None
 
 
 @pytest.fixture(autouse=True)

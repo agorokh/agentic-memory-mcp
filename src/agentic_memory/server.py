@@ -31,6 +31,7 @@ _LOG = logging.getLogger("agentic_memory.server")
 
 _PROBE_SEM: asyncio.Semaphore | None = None
 _PROBE_SEM_LIMIT: int | None = None
+_PROBE_SEM_LOOP_ID: int | None = None
 
 _CLIENT_ERROR_RESERVED = frozenset({"workspace", "http_status", "ok", "error", "detail"})
 _QUERY_ERROR_RESERVED = _CLIENT_ERROR_RESERVED | frozenset({"result"})
@@ -50,11 +51,17 @@ def _probe_concurrency_limit() -> int:
 
 
 def _probe_semaphore() -> asyncio.Semaphore:
-    global _PROBE_SEM, _PROBE_SEM_LIMIT
+    global _PROBE_SEM, _PROBE_SEM_LIMIT, _PROBE_SEM_LOOP_ID
     limit = _probe_concurrency_limit()
-    if _PROBE_SEM is None or _PROBE_SEM_LIMIT != limit:
+    loop_id = id(asyncio.get_running_loop())
+    if (
+        _PROBE_SEM is None
+        or _PROBE_SEM_LIMIT != limit
+        or _PROBE_SEM_LOOP_ID != loop_id
+    ):
         _PROBE_SEM = asyncio.Semaphore(limit)
         _PROBE_SEM_LIMIT = limit
+        _PROBE_SEM_LOOP_ID = loop_id
     return _PROBE_SEM
 
 

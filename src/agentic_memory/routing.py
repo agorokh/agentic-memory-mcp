@@ -62,8 +62,11 @@ def _upstream_ok_status(status: int) -> bool:
 
 async def probe_lightrag_endpoint(client: httpx.AsyncClient, endpoint: HttpUrl | str) -> bool:
     """Return True when ``/health`` or ``/`` returns 2xx (redirects are not success)."""
-    await asyncio.to_thread(validate_endpoint_url, str(endpoint))
-    base = str(endpoint).rstrip("/")
+    try:
+        base = (await asyncio.to_thread(validate_endpoint_url, str(endpoint))).rstrip("/")
+    except ValueError as exc:
+        _LOG.debug("probe %s rejected during endpoint validation: %s", endpoint, exc)
+        return False
     for path in ("/health", "/"):
         try:
             resp = await client.get(f"{base}{path}")

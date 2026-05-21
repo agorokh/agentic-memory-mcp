@@ -412,6 +412,22 @@ def test_probe_requires_success_status() -> None:
     asyncio.run(body())
 
 
+def test_probe_returns_false_when_endpoint_validation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _reject(_url: str) -> str:
+        raise ValueError("blocked host: 'evil'")
+
+    monkeypatch.setattr("agentic_memory.routing.validate_endpoint_url", _reject)
+
+    async def body() -> None:
+        async with httpx.AsyncClient() as client:
+            ok = await probe_lightrag_endpoint(client, "http://evil.test")
+            assert ok is False
+
+    asyncio.run(body())
+
+
 def test_probe_treats_redirect_as_unreachable() -> None:
     async def body() -> None:
         transport = httpx.MockTransport(
