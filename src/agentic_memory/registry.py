@@ -82,8 +82,11 @@ def _reject_metadata_endpoint(host: str) -> None:
             resolved = ipaddress.ip_address(info[4][0])
             if _is_blocked_metadata_ip(resolved):
                 raise ValueError(f"blocked metadata endpoint: {host!r}") from None
-    except socket.gaierror:
-        return
+    except socket.gaierror as exc:
+        raise ValueError(
+            f"could not resolve endpoint hostname {host!r}; "
+            "refuse registry endpoints with unknown DNS when checking metadata endpoints"
+        ) from exc
 
 
 def _reject_private_host(host: str) -> None:

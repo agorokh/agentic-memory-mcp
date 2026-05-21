@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,19 @@ def test_validate_endpoint_blocks_metadata_ip_even_when_private_allowed(
     monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     with pytest.raises(ValueError, match="blocked metadata"):
         validate_endpoint_url("http://169.254.169.254/")
+
+
+def test_validate_endpoint_fail_closed_on_unresolvable_hostname_for_metadata_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+
+    def _fail(*_args: object, **_kwargs: object) -> list[tuple]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fail)
+    with pytest.raises(ValueError, match="could not resolve endpoint hostname"):
+        validate_endpoint_url("http://unresolvable.example/")
 
 
 def test_validate_endpoint_blocks_ipv6_mapped_metadata_ip(
