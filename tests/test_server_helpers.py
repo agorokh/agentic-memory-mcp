@@ -24,6 +24,12 @@ def test_query_tool_payload_upstream_error() -> None:
     assert payload["error"] == "upstream_http_error"
 
 
+def test_query_tool_payload_redirect_is_not_success() -> None:
+    payload = _query_tool_payload("w", 302, {"location": "/elsewhere"})
+    assert payload["ok"] is False
+    assert payload["error"] == "upstream_http_error"
+
+
 def test_tool_json_compact_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENTIC_MEMORY_JSON_PRETTY", raising=False)
     text = tool_json({"a": 1})

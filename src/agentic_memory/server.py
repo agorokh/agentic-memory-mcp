@@ -189,8 +189,13 @@ def _query_error_payload(
     return tool_json(payload)
 
 
+def _upstream_ok(status: int | None) -> bool:
+    """Only 2xx responses count as successful upstream HTTP."""
+    return status is not None and 200 <= status < 300
+
+
 def _query_tool_payload(workspace: str, status: int | None, data: Any) -> dict[str, Any]:
-    ok = status is not None and status < 400
+    ok = _upstream_ok(status)
     payload: dict[str, Any] = {
         "workspace": workspace,
         "http_status": status,
@@ -212,7 +217,7 @@ def _health_tool_payload(
     return {
         "workspace": workspace,
         "http_status": status,
-        "ok": status is not None and status < 400,
+        "ok": _upstream_ok(status),
         status_key: data if isinstance(data, dict) else {"raw": data},
     }
 
