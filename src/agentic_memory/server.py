@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -199,15 +200,31 @@ def _health_tool_payload(
     }
 
 
+def _workspace_resolution_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
+    """Parse resolve_workspace failures into an MCP error code and structured fields."""
+    message = str(exc)
+    try:
+        payload = json.loads(message)
+    except json.JSONDecodeError:
+        return "workspace_resolution_failed", {"detail": message}
+    if not isinstance(payload, dict):
+        return "workspace_resolution_failed", {"detail": message}
+    fields = dict(payload)
+    code = str(fields.pop("error", "workspace_resolution_failed"))
+    return code, fields
+
+
 def build_mcp(router: Router) -> FastMCP:
     preamble = tool_preamble(router)
     mcp = FastMCP("agentic-memory")
 
-    def _resolve_workspace(workspace: str | None) -> tuple[str | None, str | None]:
+    def _resolve_workspace(
+        workspace: str | None,
+    ) -> tuple[str | None, tuple[str, dict[str, Any]] | None]:
         try:
             return router.resolve_workspace(workspace), None
         except (ValueError, WorkspaceLookupError) as exc:
-            return None, str(exc)
+            return None, _workspace_resolution_error(exc)
 
     async def _run_tool(
         *,
@@ -219,7 +236,17 @@ def build_mcp(router: Router) -> FastMCP:
         t0 = time.perf_counter()
         ws, err = _resolve_workspace(workspace)
         if err is not None:
-            return _client_error_payload(code="workspace_resolution_failed", detail=err)
+            code, fields = err
+            text = _client_error_payload(code=code, workspace=workspace, **fields)
+            log_call(
+                workspace=workspace or "*",
+                tool=tool,
+                prompt=prompt,
+                latency_ms=(time.perf_counter() - t0) * 1000,
+                http_status=None,
+                result_size=len(text),
+            )
+            return text
         assert ws is not None
         try:
             status, data = await run(ws)
@@ -314,12 +341,9 @@ def build_mcp(router: Router) -> FastMCP:
             )
         ws, err = _resolve_workspace(workspace)
         if err is not None:
+            code, fields = err
             return _reject(
-                _query_error_payload(
-                    workspace=audit_ws,
-                    code="workspace_resolution_failed",
-                    detail=err,
-                ),
+                _query_error_payload(workspace=audit_ws, code=code, **fields),
             )
         assert ws is not None
         rec = router.vaults_by_id[ws]
@@ -409,7 +433,17 @@ def build_mcp(router: Router) -> FastMCP:
         else:
             ws, err = _resolve_workspace(workspace)
             if err is not None:
-                return _client_error_payload(code="workspace_resolution_failed", detail=err)
+                code, fields = err
+                text = _client_error_payload(code=code, workspace=workspace, **fields)
+                log_call(
+                    workspace=workspace,
+                    tool="verify_server_health",
+                    prompt=None,
+                    latency_ms=(time.perf_counter() - t0) * 1000,
+                    http_status=None,
+                    result_size=len(text),
+                )
+                return text
             assert ws is not None
             targets = [ws]
 

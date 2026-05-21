@@ -200,6 +200,51 @@ async def test_query_tool_wraps_success_with_http_status(tmp_path: Path) -> None
     await router.aclose()
 
 
+@pytest.mark.asyncio
+async def test_metadata_tool_structured_workspace_required_error(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                "[[vaults]]",
+                'id = "a"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "[[vaults]]",
+                'id = "b"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    router = await _router_from_registry(p)
+    mcp = build_mcp(router)
+    fn = _tool_fn(mcp, "get_graph_metadata")
+    out = await fn(workspace=None)
+    data = json.loads(out)
+    assert data["error"] == "workspace_required"
+    assert isinstance(data["visible_workspaces"], list)
+    assert "detail" not in data or not str(data["detail"]).startswith("{")
+    await router.aclose()
+
+
+@pytest.mark.asyncio
+async def test_metadata_tool_audits_workspace_resolution_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    p = _write_registry(tmp_path)
+    caplog.set_level("INFO", logger="agentic_memory.audit")
+    router = await _router_from_registry(p)
+    mcp = build_mcp(router)
+    fn = _tool_fn(mcp, "get_graph_metadata")
+    await fn(workspace="missing")
+    assert any("get_graph_metadata" in r.message for r in caplog.records)
+    await router.aclose()
+
+
 def _write_registry(tmp_path: Path) -> Path:
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
