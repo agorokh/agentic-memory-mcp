@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -37,8 +38,10 @@ def _env_float(name: str, default: str) -> float:
 def _http_limits() -> httpx.Limits:
     max_conn = _env_int("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS", "64")
     max_keep = _env_int("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE", "16")
-    if max_conn < 1 or max_keep < 0:
+    if max_conn < 1:
         raise ValueError("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS must be >= 1")
+    if max_keep < 0:
+        raise ValueError("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE must be >= 0")
     return httpx.Limits(
         max_connections=max_conn,
         max_keepalive_connections=max_keep,
@@ -52,14 +55,19 @@ def _http_timeout(timeout_s: float) -> httpx.Timeout:
     return httpx.Timeout(connect=5.0, read=read_s, write=10.0, pool=5.0)
 
 
+def _upstream_ok_status(status: int) -> bool:
+    """Only 2xx responses count as successful upstream HTTP (matches tool payloads)."""
+    return 200 <= status < 300
+
+
 async def probe_lightrag_endpoint(client: httpx.AsyncClient, endpoint: HttpUrl | str) -> bool:
-    """Return True when ``/health`` or ``/`` returns a 2xx/3xx (not 4xx/5xx)."""
-    validate_endpoint_url(str(endpoint))
+    """Return True when ``/health`` or ``/`` returns 2xx (redirects are not success)."""
+    await asyncio.to_thread(validate_endpoint_url, str(endpoint))
     base = str(endpoint).rstrip("/")
     for path in ("/health", "/"):
         try:
             resp = await client.get(f"{base}{path}")
-            if 200 <= resp.status_code < 400:
+            if _upstream_ok_status(resp.status_code):
                 return True
         except httpx.HTTPError as exc:
             _LOG.debug("probe %s%s failed: %s", base, path, exc)
@@ -138,9 +146,9 @@ class Router(BaseModel):
             )
         return workspace
 
-    def _base_url(self, workspace_id: str) -> str:
+    async def _validated_base_url(self, workspace_id: str) -> str:
         rec = self.vaults_by_id[workspace_id]
-        url = validate_endpoint_url(str(rec.endpoint))
+        url = await asyncio.to_thread(validate_endpoint_url, str(rec.endpoint))
         return url.rstrip("/")
 
     def _map_mode(self, search_mode: SearchMode) -> str:
@@ -189,7 +197,7 @@ class Router(BaseModel):
                 "backend": backend,
                 "detail": "This bridge only implements LightRAG HTTP read paths.",
             }
-        base = self._base_url(workspace_id)
+        base = await self._validated_base_url(workspace_id)
         body = self._build_query_body(
             prompt=prompt,
             search_mode=search_mode,
@@ -211,7 +219,7 @@ class Router(BaseModel):
                 "workspace": workspace_id,
                 "backend": backend,
             }
-        base = self._base_url(workspace_id)
+        base = await self._validated_base_url(workspace_id)
         resp = await self.client.get(f"{base}/health")
         try:
             return resp.status_code, resp.json()
