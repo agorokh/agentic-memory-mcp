@@ -1,10 +1,47 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import socket
 
-# Make `src/agentic_memory/` importable when running tests from the repo root.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-_SRC = REPO_ROOT / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+import pytest
+
+_TEST_HOSTS = frozenset(
+    {"memory.test", "other.test", "probe.test", "a.test", "b.test", "m2pro"},
+)
+
+
+@pytest.fixture(autouse=True)
+def _allow_private_endpoints_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests use localhost/memory.test endpoints; production defaults stay strict."""
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_probe_semaphore() -> None:
+    """Avoid caching probe concurrency across tests with different env overrides."""
+    import agentic_memory.server as server_mod
+
+    server_mod._PROBE_SEM = None
+    server_mod._PROBE_SEM_LIMIT = None
+    server_mod._PROBE_SEM_LOOP_ID = None
+    yield
+    server_mod._PROBE_SEM = None
+    server_mod._PROBE_SEM_LIMIT = None
+    server_mod._PROBE_SEM_LOOP_ID = None
+
+
+@pytest.fixture(autouse=True)
+def _resolve_test_hostnames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve *.test registry hosts to loopback so DNS fail-closed checks can run in CI."""
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _getaddrinfo(
+        host: str | bytes | None,
+        port: str | int | None,
+        *args: object,
+        **kwargs: object,
+    ) -> list[tuple]:
+        if isinstance(host, str) and host in _TEST_HOSTS:
+            host = "127.0.0.1"
+        return real_getaddrinfo(host, port, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)

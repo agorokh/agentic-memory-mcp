@@ -1,30 +1,76 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import Any, Literal
+import os
+from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, PrivateAttr
 
-from agentic_memory.registry import VaultRecord, apply_allowlist
+from agentic_memory.registry import VaultRecord, apply_allowlist, effective_backend, validate_endpoint_url
+from agentic_memory.types import SearchMode
 
 _LOG = logging.getLogger("agentic_memory.routing")
-
-SearchMode = Literal["mix", "semantic", "keyword", "global", "hybrid", "local", "naive"]
 
 
 class WorkspaceLookupError(LookupError):
     """Raised when ``workspace`` is unknown or disabled in the registry."""
 
 
+def _env_int(name: str, default: str) -> int:
+    raw = os.environ.get(name, default).strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _env_float(name: str, default: str) -> float:
+    raw = os.environ.get(name, default).strip()
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
+def _http_limits() -> httpx.Limits:
+    max_conn = _env_int("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS", "64")
+    max_keep = _env_int("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE", "16")
+    if max_conn < 1:
+        raise ValueError("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS must be >= 1")
+    if max_keep < 0:
+        raise ValueError("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE must be >= 0")
+    return httpx.Limits(
+        max_connections=max_conn,
+        max_keepalive_connections=max_keep,
+    )
+
+
+def _http_timeout(timeout_s: float) -> httpx.Timeout:
+    read_s = _env_float("AGENTIC_MEMORY_QUERY_READ_TIMEOUT_S", str(timeout_s))
+    if read_s <= 0:
+        raise ValueError("AGENTIC_MEMORY_QUERY_READ_TIMEOUT_S must be > 0")
+    return httpx.Timeout(connect=5.0, read=read_s, write=10.0, pool=5.0)
+
+
+def _upstream_ok_status(status: int) -> bool:
+    """Only 2xx responses count as successful upstream HTTP (matches tool payloads)."""
+    return 200 <= status < 300
+
+
 async def probe_lightrag_endpoint(client: httpx.AsyncClient, endpoint: HttpUrl | str) -> bool:
-    """Return True when ``/health`` or ``/`` returns a 2xx/3xx (not 4xx/5xx)."""
-    base = str(endpoint).rstrip("/")
+    """Return True when ``/health`` or ``/`` returns 2xx (redirects are not success)."""
+    try:
+        base = (await asyncio.to_thread(validate_endpoint_url, str(endpoint))).rstrip("/")
+    except ValueError as exc:
+        _LOG.debug("probe %s rejected during endpoint validation: %s", endpoint, exc)
+        return False
     for path in ("/health", "/"):
         try:
             resp = await client.get(f"{base}{path}")
-            if 200 <= resp.status_code < 400:
+            if _upstream_ok_status(resp.status_code):
                 return True
         except httpx.HTTPError as exc:
             _LOG.debug("probe %s%s failed: %s", base, path, exc)
@@ -32,12 +78,7 @@ async def probe_lightrag_endpoint(client: httpx.AsyncClient, endpoint: HttpUrl |
 
 
 class Router(BaseModel):
-    """Workspace routing + LightRAG HTTP client.
-
-    One shared :class:`httpx.AsyncClient` multiplexes all workspace base URLs; ``httpx.Limits``
-    constrain the client process-wide (not as independent per-host pools). Prefer accurate
-    capacity planning over assuming strict per-endpoint isolation.
-    """
+    """Workspace routing + LightRAG HTTP client."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -62,10 +103,13 @@ class Router(BaseModel):
                 raise ValueError(f"Duplicate workspace id {v.id!r} in fleet registry.")
             seen.add(v.id)
         by_id = {v.id: v for v in effective}
-        limits = httpx.Limits(max_keepalive_connections=4, max_connections=32)
         owns = client is None
         if client is None:
-            client = httpx.AsyncClient(timeout=timeout_s, limits=limits)
+            client = httpx.AsyncClient(
+                timeout=_http_timeout(timeout_s),
+                limits=_http_limits(),
+                follow_redirects=False,
+            )
         inst = cls(vaults_by_id=by_id, allowlist=allowlist, client=client)
         inst._owns_client = owns
         return inst
@@ -89,7 +133,7 @@ class Router(BaseModel):
                         "visible_workspaces": visible,
                         "hint": "Pass workspace= explicitly when more than one entry is visible.",
                     },
-                    indent=2,
+                    separators=(",", ":"),
                 )
             )
         if workspace not in self.vaults_by_id:
@@ -99,28 +143,25 @@ class Router(BaseModel):
                         "error": "workspace_unknown",
                         "requested": workspace,
                         "visible_workspaces": visible,
-                        "allowed_workspaces": sorted(self.allowlist)
-                        if self.allowlist is not None
-                        else None,
                     },
-                    indent=2,
+                    separators=(",", ":"),
                 )
             )
         return workspace
 
-    def _base_url(self, workspace_id: str) -> str:
+    async def _validated_base_url(self, workspace_id: str) -> str:
         rec = self.vaults_by_id[workspace_id]
-        return str(rec.endpoint).rstrip("/")
+        url = await asyncio.to_thread(validate_endpoint_url, str(rec.endpoint))
+        return url.rstrip("/")
 
     def _map_mode(self, search_mode: SearchMode) -> str:
-        # LightRAG HTTP ``mode`` values; map vendor-specific names conservatively.
         if search_mode in ("mix", "global", "hybrid", "local", "naive"):
             return search_mode
         if search_mode == "semantic":
             return "local"
         if search_mode == "keyword":
             return "naive"
-        return "mix"
+        raise ValueError(f"unsupported search_mode: {search_mode!r}")
 
     def _build_query_body(
         self,
@@ -148,11 +189,18 @@ class Router(BaseModel):
         workspace_id: str,
         prompt: str,
         search_mode: SearchMode,
-        limit: int,
         context_only: bool,
         prompt_only: bool,
     ) -> tuple[int | None, Any]:
-        base = self._base_url(workspace_id)
+        backend = effective_backend(self.vaults_by_id[workspace_id])
+        if backend != "lightrag":
+            return None, {
+                "error": "unsupported_backend",
+                "workspace": workspace_id,
+                "backend": backend,
+                "detail": "This bridge only implements LightRAG HTTP read paths.",
+            }
+        base = await self._validated_base_url(workspace_id)
         body = self._build_query_body(
             prompt=prompt,
             search_mode=search_mode,
@@ -164,39 +212,17 @@ class Router(BaseModel):
             data = resp.json()
         except json.JSONDecodeError:
             data = {"raw": resp.text}
-        if limit > 0:
-            data = self._maybe_truncate_payload(data, limit)
         return resp.status_code, data
 
-    def _maybe_truncate_payload(self, data: Any, limit: int) -> Any:
-        """Coarse cap on serialized size using ``limit`` as a rough token proxy.
-
-        When the full ``indent=2`` JSON exceeds the cap, return a wrapper dict whose
-        ``preview`` is sized so a *single* ``json.dumps(..., indent=2)`` stays within
-        the cap (avoids embedding a JSON string that then gets escaped a second time).
-        """
-        cap = limit * 400
-        try:
-            text = json.dumps(data, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            return data
-        if len(text) <= cap:
-            return data
-        lo, hi = 0, min(len(text), cap)
-        best = 0
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            candidate = {"truncated": True, "limit": limit, "preview": text[:mid]}
-            serialized = json.dumps(candidate, ensure_ascii=False, indent=2)
-            if len(serialized) <= cap:
-                best = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return {"truncated": True, "limit": limit, "preview": text[:best]}
-
     async def get_health_json(self, workspace_id: str) -> tuple[int | None, Any]:
-        base = self._base_url(workspace_id)
+        backend = effective_backend(self.vaults_by_id[workspace_id])
+        if backend != "lightrag":
+            return None, {
+                "error": "unsupported_backend",
+                "workspace": workspace_id,
+                "backend": backend,
+            }
+        base = await self._validated_base_url(workspace_id)
         resp = await self.client.get(f"{base}/health")
         try:
             return resp.status_code, resp.json()

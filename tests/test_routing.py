@@ -54,7 +54,6 @@ def test_query_lightrag_maps_semantic_mode(tmp_path: Path) -> None:
                 workspace_id="w",
                 prompt="hello",
                 search_mode="semantic",
-                limit=1000,
                 context_only=False,
                 prompt_only=False,
             )
@@ -119,7 +118,6 @@ def test_concurrent_queries_share_one_async_client(tmp_path: Path) -> None:
                     workspace_id="w",
                     prompt="a",
                     search_mode="mix",
-                    limit=1000,
                     context_only=False,
                     prompt_only=False,
                 )
@@ -199,7 +197,7 @@ def test_resolve_workspace_rejects_unknown_with_structured_payload(tmp_path: Pat
     asyncio.run(body())
 
 
-def test_query_truncation_keeps_final_json_under_cap(tmp_path: Path) -> None:
+def test_query_lightrag_returns_untruncated_upstream_body(tmp_path: Path) -> None:
     async def body() -> None:
         p = tmp_path / "fleet_registry.toml"
         p.write_text(
@@ -230,14 +228,170 @@ def test_query_truncation_keeps_final_json_under_cap(tmp_path: Path) -> None:
                 workspace_id="w",
                 prompt="q",
                 search_mode="mix",
-                limit=2,
                 context_only=False,
                 prompt_only=False,
             )
-            assert isinstance(data, dict)
-            assert data.get("truncated") is True
-            out = json.dumps(data, ensure_ascii=False, indent=2)
-            assert len(out) <= 2 * 400
+            assert data == huge
+
+    asyncio.run(body())
+
+
+@pytest.mark.asyncio
+async def test_query_lightrag_returns_upstream_error_status(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                "[[vaults]]",
+                'id = "w"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    reg = load_registry(p)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/query":
+            return httpx.Response(502, json={"error": "upstream"})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        router = await Router.build(vaults=reg.vaults, allowlist=None, client=client)
+        status, data = await router.query_lightrag(
+            workspace_id="w",
+            prompt="q",
+            search_mode="mix",
+            context_only=False,
+            prompt_only=False,
+        )
+        assert status == 502
+        assert isinstance(data, dict)
+
+
+@pytest.mark.asyncio
+async def test_query_lightrag_rejects_graphiti_backend(tmp_path: Path) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                'schema_version = "2"',
+                "[[vaults]]",
+                'id = "g"',
+                'endpoint = "http://memory.test"',
+                'backend = "graphiti"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    reg = load_registry(p)
+    transport = _mock_transport()
+    async with httpx.AsyncClient(transport=transport) as client:
+        router = await Router.build(vaults=reg.vaults, allowlist=None, client=client)
+        status, data = await router.query_lightrag(
+            workspace_id="g",
+            prompt="q",
+            search_mode="mix",
+            context_only=False,
+            prompt_only=False,
+        )
+        assert status is None
+        assert isinstance(data, dict)
+        assert data.get("error") == "unsupported_backend"
+
+
+def test_router_build_rejects_invalid_http_max_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS", "not-a-number")
+
+    async def body() -> None:
+        p = tmp_path / "fleet_registry.toml"
+        p.write_text(
+            "\n".join(
+                [
+                    f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test"',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        reg = load_registry(p)
+        with pytest.raises(ValueError, match="AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS"):
+            await Router.build(vaults=reg.vaults, allowlist=None)
+
+    asyncio.run(body())
+
+
+def test_router_build_rejects_negative_http_max_keepalive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE", "-1")
+
+    async def body() -> None:
+        p = tmp_path / "fleet_registry.toml"
+        p.write_text(
+            "\n".join(
+                [
+                    f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test"',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        reg = load_registry(p)
+        with pytest.raises(ValueError, match="AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE"):
+            await Router.build(vaults=reg.vaults, allowlist=None)
+
+    asyncio.run(body())
+
+
+def test_validated_base_url_revalidates_endpoint_on_each_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def _track(url: str) -> str:
+        calls.append(url)
+        return url
+
+    monkeypatch.setattr("agentic_memory.routing.validate_endpoint_url", _track)
+
+    async def body() -> None:
+        p = tmp_path / "fleet_registry.toml"
+        p.write_text(
+            "\n".join(
+                [
+                    f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                    "[[vaults]]",
+                    'id = "w"',
+                    'endpoint = "http://memory.test"',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        reg = load_registry(p)
+        router = await Router.build(vaults=reg.vaults, allowlist=None)
+        await router._validated_base_url("w")
+        await router._validated_base_url("w")
+        await router.aclose()
+        assert len(calls) == 2
 
     asyncio.run(body())
 
@@ -250,6 +404,34 @@ def test_probe_requires_success_status() -> None:
                 if r.url.path == "/health"
                 else httpx.Response(404)
             )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            ok = await probe_lightrag_endpoint(client, "http://probe.test")
+            assert ok is False
+
+    asyncio.run(body())
+
+
+def test_probe_returns_false_when_endpoint_validation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _reject(_url: str) -> str:
+        raise ValueError("blocked host: 'evil'")
+
+    monkeypatch.setattr("agentic_memory.routing.validate_endpoint_url", _reject)
+
+    async def body() -> None:
+        async with httpx.AsyncClient() as client:
+            ok = await probe_lightrag_endpoint(client, "http://evil.test")
+            assert ok is False
+
+    asyncio.run(body())
+
+
+def test_probe_treats_redirect_as_unreachable() -> None:
+    async def body() -> None:
+        transport = httpx.MockTransport(
+            lambda r: httpx.Response(302, headers={"Location": "/elsewhere"})
         )
         async with httpx.AsyncClient(transport=transport) as client:
             ok = await probe_lightrag_endpoint(client, "http://probe.test")

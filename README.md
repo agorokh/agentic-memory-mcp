@@ -26,29 +26,42 @@ Used by the [Choosing memory for enterprise agents](https://agorokh.github.io/ap
 - **Workspace-aware.** Each MCP tool call carries a `workspace` parameter; the bridge looks up the workspace's HTTP endpoint from a fleet registry TOML file.
 - **Allowlist per host.** `AGENTIC_MEMORY_ALLOWED_WORKSPACES` env var limits which workspaces this process can route to. Different host machines see different workspace subsets.
 - **Audit trail.** Every tool call is logged (prompt-redacted by default; `AGENTIC_MEMORY_LOG_PROMPTS=1` to include).
-- **Pooled HTTP.** A single shared `httpx.AsyncClient` handles all workspaces.
+- **Pooled HTTP.** A single shared `httpx.AsyncClient` handles all workspaces (tunable via env; see below).
 
 ## Tools exposed via MCP
 
 | Tool | What it does | LightRAG endpoint |
 |---|---|---|
-| `query_knowledge_graph` | Run a query in any of `mix`, `semantic`, `keyword`, `global`, `hybrid`, `local`, `naive` modes. | `POST /query` |
-| `verify_server_health` | Reachability check on a workspace endpoint (or `workspace="*"` to probe every visible one). | `GET /health` / `GET /` |
-| `get_graph_metadata` | Per-workspace `/health` payload, annotated with the workspace ID. | `GET /health` |
-| `check_indexing_status` | Same `/health` payload with operator-friendly labels (fields vary by LightRAG version). | `GET /health` |
-| `list_workspaces` | Returns enabled workspaces visible to this process after allowlist filtering. | (none — registry-only) |
+| `query_knowledge_graph` | Query with `mix`, `semantic`, `keyword`, `global`, `hybrid`, `local`, or `naive` modes. Returns JSON with `http_status`, `ok`, and `result`. | `POST /query` |
+| `verify_server_health` | Reachability check (`workspace="*"` probes all visible workspaces). | `GET /health` / `GET /` |
+| `get_graph_metadata` | Per-workspace `/health` payload. | `GET /health` |
+| `check_indexing_status` | Same `/health` payload with operator-friendly labels. | `GET /health` |
+| `list_workspaces` | Registry metadata after allowlist filtering (`query_supported` flag per row). | (registry-only) |
 
-No `set_active_workspace` — every tool call passes `workspace` explicitly, so a single MCP client session can fan out across multiple workspaces.
+### `query_knowledge_graph` parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `prompt` | (required) | Forwarded to LightRAG; max 32 000 characters. |
+| `workspace` | auto when one visible | Required when multiple workspaces are visible. |
+| `search_mode` | `mix` | `semantic` → LightRAG `local`; `keyword` → `naive`. |
+| `limit` | `60` | Caps **serialized MCP JSON** (~`limit × 400` chars), not LightRAG `top_k`. |
+| `context_only` / `prompt_only` | `false` | Map to LightRAG `only_need_context` / chunk inclusion. |
+
+No `set_active_workspace` — every tool call passes `workspace` explicitly.
 
 ## Quick start
 
 ```bash
 # 1. Install
-pip install -e .   # (PyPI publish pending; use editable install from a clone)
+pip install -e .
 
-# 2. Point at a fleet registry. See examples/fleet_registry.example.toml for the schema.
+# 2. Copy and edit the example registry (schema v2)
 cp examples/fleet_registry.example.toml ./fleet_registry.toml
-$EDITOR fleet_registry.toml  # set workspace ids + endpoint URLs
+$EDITOR fleet_registry.toml
+
+# Localhost/private IPs require:
+export AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS=1
 
 export AGENTIC_MEMORY_REGISTRY_PATH=$PWD/fleet_registry.toml
 
@@ -56,7 +69,8 @@ export AGENTIC_MEMORY_REGISTRY_PATH=$PWD/fleet_registry.toml
 export AGENTIC_MEMORY_ALLOWED_WORKSPACES=my_workspace_a,my_workspace_b
 
 # 4. Run the MCP server (stdio)
-python -m agentic_memory.server
+agentic-memory-mcp
+# or: python -m agentic_memory.server
 ```
 
 Connect from Claude Code by adding to `.mcp.json`:
@@ -65,10 +79,10 @@ Connect from Claude Code by adding to `.mcp.json`:
 {
   "mcpServers": {
     "agentic-memory": {
-      "command": "python",
-      "args": ["-m", "agentic_memory.server"],
+      "command": "agentic-memory-mcp",
       "env": {
-        "AGENTIC_MEMORY_REGISTRY_PATH": "/abs/path/to/fleet_registry.toml"
+        "AGENTIC_MEMORY_REGISTRY_PATH": "/abs/path/to/fleet_registry.toml",
+        "AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS": "1"
       }
     }
   }
@@ -79,53 +93,70 @@ Connect from Claude Code by adding to `.mcp.json`:
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `AGENTIC_MEMORY_REGISTRY_PATH` | yes | Absolute path to a `fleet_registry.toml` (see `examples/fleet_registry.example.toml`). |
-| `AGENTIC_MEMORY_ALLOWED_WORKSPACES` | no | Comma-separated workspace IDs visible to this process. Empty = all **enabled** registry rows. |
-| `AGENTIC_MEMORY_LOG_PROMPTS` | no | `1` / `true` / `yes` / `on` (case-insensitive) → audit logs include raw prompts (avoid in shared logs). |
-| `AGENTIC_MEMORY_LOG_LEVEL` | no | Python log level for bridge stderr (default `INFO`). |
+| `AGENTIC_MEMORY_REGISTRY_PATH` | yes | Path to `fleet_registry.toml` (prefer absolute). |
+| `AGENTIC_MEMORY_ALLOWED_WORKSPACES` | no | Comma-separated workspace IDs. Empty = all **enabled** rows. |
+| `AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS` | no | `1` / `true` to allow loopback and RFC1918 endpoints in the registry. |
+| `AGENTIC_MEMORY_LOG_PROMPTS` | no | Log raw prompts in audit JSON (avoid in shared log stacks). |
+| `AGENTIC_MEMORY_LOG_LEVEL` | no | Python log level (default `INFO`). |
+| `AGENTIC_MEMORY_HTTP_MAX_CONNECTIONS` | no | Shared httpx pool size (default `64`). |
+| `AGENTIC_MEMORY_HTTP_MAX_KEEPALIVE` | no | Keepalive connections (default `16`). |
+| `AGENTIC_MEMORY_QUERY_READ_TIMEOUT_S` | no | Read timeout for upstream HTTP (default `120`). |
+| `AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY` | no | Parallelism for startup / `verify_server_health("*")` (default `8`). |
+| `AGENTIC_MEMORY_JSON_PRETTY` | no | Pretty-print MCP tool JSON when set truthy. |
 
-## Fleet registry schema
+## Fleet registry schema (v2)
 
-The registry is TOML with schema version `1`. Each `[[vaults]]` row pins one workspace to one HTTP endpoint, with an explicit `enabled` flag, a `backend` discriminator, and an optional `allowed_modes` list. See [`examples/fleet_registry.example.toml`](examples/fleet_registry.example.toml) for a complete commented example.
+Supported reader versions: `"1"` and `"2"`. Writers should emit `schema_version = "2"`.
 
 ```toml
-schema_version = 1
+schema_version = "2"
 
 [[vaults]]
 id = "my_workspace_a"
 endpoint = "http://localhost:8020"
-backend = "lightrag"
+backend = "lightrag"          # only lightrag is queryable today
 enabled = true
-allowed_modes = ["mix", "hybrid", "semantic"]
+allowed_modes = ["mix", "hybrid", "semantic"]   # optional; default = all modes
+origin = "repo-product"       # optional
+graph_namespace = "..."       # optional; for graphiti metadata only
 ```
 
-A separate upstream pipeline (in your own repo) is expected to materialise this file from your fleet declaration. The bridge does not validate that pipeline; it just consumes the rendered TOML.
+- **`backend = "graphiti"`** rows are listed in `list_workspaces` but **cannot be queried** until a Graphiti read path exists.
+- **`allowed_modes`** restricts `search_mode` per workspace when set; an empty list denies all modes.
+- Endpoints must not embed credentials. Metadata hosts (e.g. cloud metadata URLs) are blocked.
+
+A separate upstream pipeline is expected to materialise this file from your fleet declaration.
 
 ## Trust model
 
-- **The bridge is read-only.** It only calls `POST /query` and `GET /health` on the LightRAG endpoints. There is no MCP tool that can write or delete from the backend.
-- **The allowlist is host-scoped.** Even if the registry lists 12 workspaces, `AGENTIC_MEMORY_ALLOWED_WORKSPACES` lets you restrict any one host to a 3-workspace subset. Disabled registry rows (`enabled = false`) are never visible regardless of allowlist.
-- **Audit logging is on by default.** Prompts are redacted unless explicitly enabled via `AGENTIC_MEMORY_LOG_PROMPTS`. The audit log uses structured JSON; one line per tool call.
+- **Read-only bridge** — only `POST /query` and `GET /health` on configured endpoints.
+- **Host allowlist** — `AGENTIC_MEMORY_ALLOWED_WORKSPACES` limits visible workspaces per process.
+- **Audit logging** — structured JSON on stderr; prompts hashed unless `AGENTIC_MEMORY_LOG_PROMPTS` is set.
+
+### Operational security
+
+- **No MCP or upstream HTTP authentication** — isolate the bridge process and restrict who can edit `fleet_registry.toml`.
+- **Registry endpoints are capability URLs** — the bridge will fetch whatever URL is configured (SSRF risk). Use network egress controls in production; set `AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS` only for local dev.
+- **Tool responses may include internal URLs** from `list_workspaces` / health tools.
+
+See [SECURITY.md](SECURITY.md) for coordinated disclosure and hardening notes.
 
 ## Why this exists
 
-Most agentic-memory bridges either:
-1. Lock you to one backend (one workspace per process, hard to scale across projects), or
-2. Expose write capabilities on the read path (one bug = corrupted index).
-
-This bridge is deliberately the opposite: one process serves many workspaces, the workspace is a per-call parameter, and the write path stays out of the agent's reach. It is the same shape that the [Choosing memory for enterprise agents](https://agorokh.github.io/applied-ai-research/2026-05-19_choosing-memory-for-enterprise-agents/) study uses, and the [canary harness](https://agorokh.github.io/applied-ai-research/2026-05-19_choosing-memory-for-enterprise-agents/artefacts/canary-harness/) measures retrieval quality against this exact MCP surface.
+Most agentic-memory bridges either lock you to one backend per process, or expose write capabilities on the read path. This bridge is deliberately the opposite: one process serves many workspaces, workspace is a per-call parameter, and the write path stays out of the agent's reach.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest                # 28 tests (registry + routing + server)
+pytest --cov=agentic_memory --cov-fail-under=73 -v
+ruff check src tests
 ```
 
 ## Companion projects
 
-- [**sdlc-dial-adapter**](https://github.com/agorokh/sdlc-dial-adapter) — Anthropic Messages API → OpenAI chat-completions translator; lets Claude Code run against any OpenAI-compatible gateway (including EPAM AI DIAL).
-- [**applied-ai-research**](https://github.com/agorokh/applied-ai-research) — practitioner notes that cite this bridge in their methodology.
+- [**sdlc-dial-adapter**](https://github.com/agorokh/sdlc-dial-adapter) — Anthropic Messages API → OpenAI chat-completions translator.
+- [**applied-ai-research**](https://github.com/agorokh/applied-ai-research) — practitioner notes citing this bridge.
 
 ## License
 

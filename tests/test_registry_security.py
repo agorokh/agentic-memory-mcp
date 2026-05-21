@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import socket
+from pathlib import Path
+
+import pytest
+from agentic_memory.registry import load_registry, validate_endpoint_url
+
+
+def test_validate_endpoint_blocks_metadata_host() -> None:
+    with pytest.raises(ValueError, match="blocked host"):
+        validate_endpoint_url("http://metadata.google.internal/")
+
+
+def test_validate_endpoint_blocks_metadata_host_fqdn_trailing_dot() -> None:
+    with pytest.raises(ValueError, match="blocked host"):
+        validate_endpoint_url("http://metadata.google.internal./")
+
+
+def test_validate_endpoint_blocks_private_ip_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    with pytest.raises(ValueError, match="private or link-local"):
+        validate_endpoint_url("http://127.0.0.1:8020/")
+
+
+def test_validate_endpoint_blocks_cgnat_range_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    with pytest.raises(ValueError, match="private or link-local"):
+        validate_endpoint_url("http://100.64.1.1:8020/")
+
+
+def test_validate_endpoint_blocks_localhost_hostname_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    with pytest.raises(ValueError, match="private or link-local"):
+        validate_endpoint_url("http://localhost:8020/")
+
+
+def test_validate_endpoint_allows_private_when_flag_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+    assert validate_endpoint_url("http://127.0.0.1:8020/") == "http://127.0.0.1:8020/"
+
+
+def test_validate_endpoint_blocks_metadata_ip_even_when_private_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+    with pytest.raises(ValueError, match="blocked metadata"):
+        validate_endpoint_url("http://169.254.169.254/")
+
+
+def test_validate_endpoint_fail_closed_on_unresolvable_hostname_for_metadata_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+
+    def _fail(*_args: object, **_kwargs: object) -> list[tuple]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fail)
+    with pytest.raises(ValueError, match="could not resolve endpoint hostname"):
+        validate_endpoint_url("http://unresolvable.example/")
+
+
+def test_validate_endpoint_blocks_ipv6_mapped_metadata_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+    with pytest.raises(ValueError, match="blocked metadata"):
+        validate_endpoint_url("http://[::ffff:169.254.169.254]/")
+
+
+def test_validate_endpoint_blocks_aws_imds_ipv6_even_when_private_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+    with pytest.raises(ValueError, match="blocked metadata"):
+        validate_endpoint_url("http://[fd00:ec2::254]/")
+
+
+def test_validate_endpoint_requires_hostname() -> None:
+    with pytest.raises(ValueError, match="hostname is required"):
+        validate_endpoint_url("http:///path")
+
+
+def test_registry_rejects_credentials_in_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                'schema_version = "2"',
+                "[[vaults]]",
+                'id = "x"',
+                'endpoint = "http://user:pass@127.0.0.1:8020/"',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Invalid fleet registry"):
+        load_registry(p)
