@@ -55,17 +55,34 @@ def _normalize_hostname(host: str) -> str:
     return host.lower().rstrip(".")
 
 
+def _is_blocked_metadata_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    metadata = ipaddress.ip_address(_BLOCKED_METADATA_IP)
+    if addr == metadata:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped == metadata:
+        return True
+    return False
+
+
 def _reject_metadata_endpoint(host: str) -> None:
     """Block cloud metadata targets even when private endpoints are allowed."""
     host = _normalize_hostname(host)
     if host in _BLOCKED_HOSTS:
         raise ValueError(f"blocked host: {host!r}")
     try:
-        if ipaddress.ip_address(host) == ipaddress.ip_address(_BLOCKED_METADATA_IP):
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if _is_blocked_metadata_ip(addr):
             raise ValueError(f"blocked metadata endpoint: {host!r}")
-    except ValueError as exc:
-        if "blocked metadata" in str(exc):
-            raise
+        return
+    try:
+        for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+            resolved = ipaddress.ip_address(info[4][0])
+            if _is_blocked_metadata_ip(resolved):
+                raise ValueError(f"blocked metadata endpoint: {host!r}") from None
+    except socket.gaierror:
         return
 
 

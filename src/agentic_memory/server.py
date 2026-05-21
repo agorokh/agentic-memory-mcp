@@ -348,7 +348,6 @@ def build_mcp(router: Router) -> FastMCP:
                 workspace_id=ws,
                 prompt=prompt,
                 search_mode=search_mode,
-                limit=limit,
                 context_only=context_only,
                 prompt_only=prompt_only,
             )

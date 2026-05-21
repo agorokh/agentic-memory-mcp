@@ -55,6 +55,14 @@ def test_validate_endpoint_blocks_metadata_ip_even_when_private_allowed(
         validate_endpoint_url("http://169.254.169.254/")
 
 
+def test_validate_endpoint_blocks_ipv6_mapped_metadata_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
+    with pytest.raises(ValueError, match="blocked metadata"):
+        validate_endpoint_url("http://[::ffff:169.254.169.254]/")
+
+
 def test_validate_endpoint_requires_hostname() -> None:
     with pytest.raises(ValueError, match="hostname is required"):
         validate_endpoint_url("http:///path")

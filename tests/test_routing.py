@@ -54,7 +54,6 @@ def test_query_lightrag_maps_semantic_mode(tmp_path: Path) -> None:
                 workspace_id="w",
                 prompt="hello",
                 search_mode="semantic",
-                limit=1000,
                 context_only=False,
                 prompt_only=False,
             )
@@ -119,7 +118,6 @@ def test_concurrent_queries_share_one_async_client(tmp_path: Path) -> None:
                     workspace_id="w",
                     prompt="a",
                     search_mode="mix",
-                    limit=1000,
                     context_only=False,
                     prompt_only=False,
                 )
@@ -230,7 +228,6 @@ def test_query_lightrag_returns_untruncated_upstream_body(tmp_path: Path) -> Non
                 workspace_id="w",
                 prompt="q",
                 search_mode="mix",
-                limit=2,
                 context_only=False,
                 prompt_only=False,
             )
@@ -269,7 +266,6 @@ async def test_query_lightrag_returns_upstream_error_status(tmp_path: Path) -> N
             workspace_id="w",
             prompt="q",
             search_mode="mix",
-            limit=60,
             context_only=False,
             prompt_only=False,
         )
@@ -302,7 +298,6 @@ async def test_query_lightrag_rejects_graphiti_backend(tmp_path: Path) -> None:
             workspace_id="g",
             prompt="q",
             search_mode="mix",
-            limit=60,
             context_only=False,
             prompt_only=False,
         )

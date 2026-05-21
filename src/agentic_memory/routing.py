@@ -156,7 +156,6 @@ class Router(BaseModel):
         workspace_id: str,
         prompt: str,
         search_mode: SearchMode,
-        limit: int,
         context_only: bool,
         prompt_only: bool,
     ) -> tuple[int | None, Any]:
