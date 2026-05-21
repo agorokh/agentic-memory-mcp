@@ -34,6 +34,11 @@ def test_validate_endpoint_allows_private_when_flag_set(
     assert validate_endpoint_url("http://127.0.0.1:8020/") == "http://127.0.0.1:8020/"
 
 
+def test_validate_endpoint_requires_hostname() -> None:
+    with pytest.raises(ValueError, match="hostname is required"):
+        validate_endpoint_url("http:///path")
+
+
 def test_registry_rejects_credentials_in_endpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

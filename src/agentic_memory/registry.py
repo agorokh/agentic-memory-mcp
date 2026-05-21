@@ -88,6 +88,8 @@ def validate_endpoint_url(url: str) -> str:
     if parsed.username or parsed.password:
         raise ValueError("endpoint must not embed credentials in the URL")
     host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError("endpoint hostname is required")
     if host in _BLOCKED_HOSTS:
         raise ValueError(f"blocked host: {host!r}")
     if not _allow_private_endpoints():

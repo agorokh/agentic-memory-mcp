@@ -100,6 +100,34 @@ async def test_query_tool_accepts_workspace_id_with_brace_prefix(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_query_tool_audits_rejected_mode(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    p = tmp_path / "fleet_registry.toml"
+    p.write_text(
+        "\n".join(
+            [
+                f'schema_version = "{REGISTRY_SCHEMA_VERSION}"',
+                "[[vaults]]",
+                'id = "w"',
+                'endpoint = "http://memory.test"',
+                "enabled = true",
+                "allowed_modes = []",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    caplog.set_level("INFO", logger="agentic_memory.audit")
+    router = await _router_from_registry(p)
+    mcp = build_mcp(router)
+    fn = _tool_fn(mcp, "query_knowledge_graph")
+    await fn(prompt="hi", limit=10)
+    assert any("query_knowledge_graph" in r.message for r in caplog.records)
+    await router.aclose()
+
+
+@pytest.mark.asyncio
 async def test_query_tool_rejects_empty_allowed_modes(tmp_path: Path) -> None:
     p = tmp_path / "fleet_registry.toml"
     p.write_text(

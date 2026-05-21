@@ -31,11 +31,23 @@ _LOG = logging.getLogger("agentic_memory.server")
 _PROBE_SEM: asyncio.Semaphore | None = None
 
 
+def _probe_concurrency_limit() -> int:
+    raw = os.environ.get("AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY", "8").strip()
+    try:
+        n = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY must be a positive integer"
+        ) from exc
+    if n < 1:
+        raise ValueError("AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY must be >= 1")
+    return min(n, 64)
+
+
 def _probe_semaphore() -> asyncio.Semaphore:
     global _PROBE_SEM
     if _PROBE_SEM is None:
-        n = int(os.environ.get("AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY", "8"))
-        _PROBE_SEM = asyncio.Semaphore(n)
+        _PROBE_SEM = asyncio.Semaphore(_probe_concurrency_limit())
     return _PROBE_SEM
 
 
@@ -100,6 +112,24 @@ async def bootstrap_router() -> tuple[Router, FleetRegistry, frozenset[str] | No
 
     await asyncio.gather(*(_probe_visible(v) for v in router.vaults_by_id.values()))
     return router, reg, allowlist
+
+
+def _log_query_call(
+    *,
+    workspace: str,
+    prompt: str | None,
+    latency_ms: float,
+    result_size: int,
+    http_status: int | None = None,
+) -> None:
+    log_call(
+        workspace=workspace,
+        tool="query_knowledge_graph",
+        prompt=prompt,
+        latency_ms=latency_ms,
+        http_status=http_status,
+        result_size=result_size,
+    )
 
 
 def _query_tool_payload(workspace: str, status: int | None, data: Any) -> dict[str, Any]:
@@ -206,35 +236,57 @@ def build_mcp(router: Router) -> FastMCP:
         context_only: bool = False,
         prompt_only: bool = False,
     ) -> str:
+        t0 = time.perf_counter()
+        audit_ws = workspace or "*"
+
+        def _reject(text: str, *, ws: str | None = None) -> str:
+            _log_query_call(
+                workspace=ws or audit_ws,
+                prompt=prompt,
+                latency_ms=(time.perf_counter() - t0) * 1000,
+                http_status=None,
+                result_size=len(text),
+            )
+            return text
+
         if limit <= 0 or limit > MAX_TOOL_LIMIT:
-            return tool_error(
-                "invalid_limit",
-                detail=f"`limit` must be between 1 and {MAX_TOOL_LIMIT}.",
+            return _reject(
+                tool_error(
+                    "invalid_limit",
+                    detail=f"`limit` must be between 1 and {MAX_TOOL_LIMIT}.",
+                )
             )
         if len(prompt) > MAX_PROMPT_CHARS:
-            return tool_error(
-                "prompt_too_large",
-                detail=f"`prompt` must be at most {MAX_PROMPT_CHARS} characters.",
+            return _reject(
+                tool_error(
+                    "prompt_too_large",
+                    detail=f"`prompt` must be at most {MAX_PROMPT_CHARS} characters.",
+                )
             )
-        t0 = time.perf_counter()
         ws, err = _resolve_workspace(workspace)
         if err is not None:
-            return err
+            return _reject(err)
         assert ws is not None
         rec = router.vaults_by_id[ws]
         if effective_backend(rec) != "lightrag":
-            return tool_error(
-                "unsupported_backend",
-                workspace=ws,
-                backend=effective_backend(rec),
-                detail="This bridge only implements LightRAG HTTP read paths.",
+            return _reject(
+                tool_error(
+                    "unsupported_backend",
+                    workspace=ws,
+                    backend=effective_backend(rec),
+                    detail="This bridge only implements LightRAG HTTP read paths.",
+                ),
+                ws=ws,
             )
         if search_mode not in allowed_modes_for(rec):
-            return tool_error(
-                "mode_not_allowed",
-                workspace=ws,
-                search_mode=search_mode,
-                allowed_modes=sorted(allowed_modes_for(rec)),
+            return _reject(
+                tool_error(
+                    "mode_not_allowed",
+                    workspace=ws,
+                    search_mode=search_mode,
+                    allowed_modes=sorted(allowed_modes_for(rec)),
+                ),
+                ws=ws,
             )
         try:
             status, data = await router.query_lightrag(
@@ -246,35 +298,18 @@ def build_mcp(router: Router) -> FastMCP:
                 prompt_only=prompt_only,
             )
         except httpx.HTTPError:
-            latency = (time.perf_counter() - t0) * 1000
-            log_call(
-                workspace=ws,
-                tool="query_knowledge_graph",
-                prompt=prompt,
-                latency_ms=latency,
-                http_status=None,
-                result_size=0,
+            return _reject(
+                tool_error("http_error", detail="upstream unreachable"),
+                ws=ws,
             )
-            return tool_error("http_error", detail="upstream unreachable")
         except Exception as exc:
-            latency = (time.perf_counter() - t0) * 1000
-            log_call(
-                workspace=ws,
-                tool="query_knowledge_graph",
-                prompt=prompt,
-                latency_ms=latency,
-                http_status=None,
-                result_size=0,
-            )
-            return tool_error("query_failed", detail=str(exc))
+            return _reject(tool_error("query_failed", detail=str(exc)), ws=ws)
         payload = _query_tool_payload(ws, status, data)
-        latency = (time.perf_counter() - t0) * 1000
         text = tool_json(payload)
-        log_call(
+        _log_query_call(
             workspace=ws,
-            tool="query_knowledge_graph",
             prompt=prompt,
-            latency_ms=latency,
+            latency_ms=(time.perf_counter() - t0) * 1000,
             http_status=status,
             result_size=len(text),
         )
