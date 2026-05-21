@@ -32,6 +32,7 @@ Origin = Literal["repo-product", "repo-embedded", "human-curated"]
 _BLOCKED_HOSTS = frozenset({"metadata.google.internal"})
 _BLOCKED_HOSTNAMES = frozenset({"localhost"})
 _BLOCKED_METADATA_IP = "169.254.169.254"
+_AWS_IMDS_IPV6_NETWORK = ipaddress.IPv6Network("fd00:ec2::/32")
 
 
 def _allow_private_endpoints() -> bool:
@@ -59,8 +60,11 @@ def _is_blocked_metadata_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address)
     metadata = ipaddress.ip_address(_BLOCKED_METADATA_IP)
     if addr == metadata:
         return True
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped == metadata:
-        return True
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped == metadata:
+            return True
+        if addr in _AWS_IMDS_IPV6_NETWORK:
+            return True
     return False
 
 
