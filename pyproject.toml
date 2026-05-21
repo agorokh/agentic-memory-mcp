@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-memory-mcp"
+version = "0.1.0"
+description = "Read-path MCP bridge to LightRAG HTTP backends (fleet registry + allowlist)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.28,<1",
+  "mcp>=1.12,<2",
+  "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/agorokh/agentic-memory-mcp"
+Repository = "https://github.com/agorokh/agentic-memory-mcp"
+Issues = "https://github.com/agorokh/agentic-memory-mcp/issues"
+"Cited by" = "https://agorokh.github.io/applied-ai-research/2026-05-19_choosing-memory-for-enterprise-agents/"
+
+[project.scripts]
+agentic-memory-mcp = "agentic_memory.server:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]

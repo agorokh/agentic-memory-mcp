@@ -1,0 +1,37 @@
+# Example fleet registry for agentic-memory-mcp.
+#
+# Copy this file to ./fleet_registry.toml (or any path) and point
+# AGENTIC_MEMORY_REGISTRY_PATH at the absolute path of your copy.
+#
+# Each [[vaults]] row pins one workspace ID to one HTTP endpoint.
+# The bridge serves only the workspaces that are listed AND `enabled = true`
+# AND (if AGENTIC_MEMORY_ALLOWED_WORKSPACES is set) in that allowlist.
+
+schema_version = 1
+
+# A workspace served from a local LightRAG instance on port 8020.
+[[vaults]]
+id = "my_workspace_a"
+endpoint = "http://localhost:8020"
+backend = "lightrag"
+enabled = true
+# Optional: restrict which query modes are allowed for this workspace.
+allowed_modes = ["mix", "hybrid", "semantic", "naive"]
+
+# A workspace served from a remote LightRAG host (e.g., a peer dev box on a
+# private network or VPN). The HTTP endpoint must be reachable from the
+# host running the bridge.
+[[vaults]]
+id = "my_workspace_b"
+endpoint = "http://10.0.0.42:8030"
+backend = "lightrag"
+enabled = true
+allowed_modes = ["mix", "global", "local"]
+
+# Disabled workspace — declared in the registry but not visible to the
+# bridge. Useful for staging or one-off corpora that aren't ready yet.
+[[vaults]]
+id = "my_workspace_staging"
+endpoint = "http://localhost:8050"
+backend = "lightrag"
+enabled = false
