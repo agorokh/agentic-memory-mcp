@@ -42,9 +42,7 @@ def _probe_concurrency_limit() -> int:
     try:
         n = int(raw)
     except ValueError as exc:
-        raise ValueError(
-            "AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY must be a positive integer"
-        ) from exc
+        raise ValueError("AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY must be a positive integer") from exc
     if n < 1:
         raise ValueError("AGENTIC_MEMORY_MAX_PROBE_CONCURRENCY must be >= 1")
     return min(n, 64)
@@ -54,11 +52,7 @@ def _probe_semaphore() -> asyncio.Semaphore:
     global _PROBE_SEM, _PROBE_SEM_LIMIT, _PROBE_SEM_LOOP_ID
     limit = _probe_concurrency_limit()
     loop_id = id(asyncio.get_running_loop())
-    if (
-        _PROBE_SEM is None
-        or _PROBE_SEM_LIMIT != limit
-        or _PROBE_SEM_LOOP_ID != loop_id
-    ):
+    if _PROBE_SEM is None or _PROBE_SEM_LIMIT != limit or _PROBE_SEM_LOOP_ID != loop_id:
         _PROBE_SEM = asyncio.Semaphore(limit)
         _PROBE_SEM_LIMIT = limit
         _PROBE_SEM_LOOP_ID = loop_id
@@ -94,7 +88,9 @@ def tool_preamble(router: Router) -> str:
     )
 
 
-async def _probe_workspace(client: httpx.AsyncClient, endpoint: str, *, timeout_s: float = 5.0) -> bool:
+async def _probe_workspace(
+    client: httpx.AsyncClient, endpoint: str, *, timeout_s: float = 5.0
+) -> bool:
     async with _probe_semaphore():
         try:
             return await asyncio.wait_for(
@@ -516,9 +512,7 @@ def build_mcp(router: Router) -> FastMCP:
     async def check_indexing_status(workspace: str | None = None) -> str:
         async def run(ws: str) -> tuple[int | None, Any]:
             status, data = await router.get_health_json(ws)
-            return status, _health_tool_payload(
-                ws, status, data, status_key="pipeline_status"
-            )
+            return status, _health_tool_payload(ws, status, data, status_key="pipeline_status")
 
         return await _run_tool(
             tool="check_indexing_status",
