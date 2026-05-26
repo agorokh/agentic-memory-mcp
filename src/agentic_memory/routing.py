@@ -9,7 +9,12 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, PrivateAttr
 
-from agentic_memory.registry import VaultRecord, apply_allowlist, effective_backend, validate_endpoint_url
+from agentic_memory.registry import (
+    VaultRecord,
+    apply_allowlist,
+    effective_backend,
+    validate_endpoint_url,
+)
 from agentic_memory.types import SearchMode
 
 _LOG = logging.getLogger("agentic_memory.routing")

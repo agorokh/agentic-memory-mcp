@@ -78,7 +78,9 @@ def test_registry_rejects_unknown_keys(tmp_path: Path, monkeypatch: pytest.Monke
         load_registry(p)
 
 
-def test_registry_rejects_bad_schema_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_registry_rejects_bad_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(
@@ -98,7 +100,9 @@ def test_registry_rejects_bad_schema_version(tmp_path: Path, monkeypatch: pytest
         load_registry(p)
 
 
-def test_router_rejects_duplicate_workspace_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_router_rejects_duplicate_workspace_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("AGENTIC_MEMORY_ALLOW_PRIVATE_ENDPOINTS", "1")
     p = tmp_path / "fleet_registry.toml"
     p.write_text(

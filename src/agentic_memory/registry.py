@@ -43,12 +43,7 @@ def _allow_private_endpoints() -> bool:
 def _is_non_public_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if hasattr(addr, "is_global"):
         return not addr.is_global
-    return bool(
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-    )
+    return bool(addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved)
 
 
 def _normalize_hostname(host: str) -> str:
